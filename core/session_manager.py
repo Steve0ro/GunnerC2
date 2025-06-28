@@ -38,8 +38,7 @@ class Session:
                 ("hostname", "hostname"),
                 ("user", "whoami"),
                 ("os", "uname"),
-                ("arch", "uname -m"),
-                ("pwd", "pwd")
+                ("arch", "uname -m")
             ]
         else:
             self.metadata["os"] = "Windows"
@@ -47,7 +46,7 @@ class Session:
             self.os_metadata_commands = [
                 ("hostname", "hostname"),
                 ("user", "whoami"),
-                ("os", "cmd.exe /c ver"),
+                ("os", "((cmd.exe /c ver) | Select-String -Pattern 'Windows').Matches.Value"),
                 ("arch", 'powershell.exe -Command "(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture)"')
             ]
 

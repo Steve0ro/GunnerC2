@@ -6,12 +6,23 @@ import readline
 import os
 import shlex
 import argparse
+import subprocess
 
-from core import http_handler, tcp_listener, shell, session_manager, utils
+from core.module_loader import load_module
+from core.module_loader import search_modules
+from core import http_handler, tcp_listener, shell, session_manager, utils, banner
 
 from core.payload_generator import *
+from core.banner import print_banner
 
-PROMPT = "GunnerC2 > "
+from colorama import init, Fore, Style
+brightgreen = Style.BRIGHT + Fore.GREEN
+brightyellow = Style.BRIGHT + Fore.YELLOW
+brightred = Style.BRIGHT + Fore.RED
+brightblue = Style.BRIGHT + Fore.BLUE
+
+PROMPT = brightblue + "GunnerC2 > "
+
 
 def bind_keys():
     readline.parse_and_bind('"\\C-l": clear-screen')
@@ -42,30 +53,44 @@ def operator_loop():
                 utils.print_help(parts[2])
 
             else:
-                print("Usage: help or help <command> [subcommand]")
+                print(brightyellow + "Usage: help or help <command> [subcommand]")
 
+            continue
+
+        elif user.startswith("banner"):
+            os.system("clear")
+            print_banner()
             continue
 
         ### Download command parsing
         elif user.startswith("download"):
             try:
-                args = shlex.split(user)
-                parser = argparse.ArgumentParser(prog="download", add_help=False)
-                parser.add_argument("-i", required=True)
-                parser.add_argument("-f", required=True)
-                parser.add_argument("-o", required=True)
-                parsed_args = parser.parse_args(args[1:])
+                try:
+                    args = shlex.split(user)
+                    parser = argparse.ArgumentParser(prog="download", add_help=False)
+                    parser.add_argument("-i", required=True)
+                    parser.add_argument("-f", required=True)
+                    parser.add_argument("-o", required=True)
+                    parsed_args = parser.parse_args(args[1:])
+
+                except Exception as e:
+                    continue
 
                 #sid = parsed_args.i
                 raw_id = parsed_args.i
                 sid = session_manager.resolve_sid(raw_id)
+                session = session_manager.sessions[sid]
+                meta = session.metadata
+                operatingsystem = meta.get("os", "").lower()
+
                 if not sid:
-                    print(f"Invalid session or alias: {raw_id}")
+                    print(brightred + f"Invalid session or alias: {raw_id}")
                     continue
 
                 remote_file = parsed_args.f
-                if "\\" not in remote_file:
-                    print("Use double backslashes when specifying file paths.")
+
+                if "\\" not in remote_file and operatingsystem == "windows":
+                    print(brightred + "Use double backslashes when specifying file paths.")
                     continue
 
                 local_file = parsed_args.o
@@ -81,11 +106,11 @@ def operator_loop():
                     shell.download_file_tcp(sid, remote_file, local_file)
 
             except SystemExit:
-                print("Run help for info: help or help <command> [subcommand]")
+                print(brightgreen + "Run help for info: help or help <command> [subcommand]")
                 #print(utils.commands["download"])
 
             except Exception as e:
-                print(f"Error parsing arguments: {e}")
+                print(brightred + f"Error parsing arguments: {e}")
             continue
 
 
@@ -93,32 +118,44 @@ def operator_loop():
             try:
                 parts = user.split()
                 if len(parts) < 7:
-                    print("Usage: upload -i <session_id> -l <local_file> -r <remote_file>")
+                    print(brightyellow + "Usage: upload -i <session_id> -l <local_file> -r <remote_file>")
 
+                try:
+                    raw_sid = parts[parts.index("-i") + 1]
+                    local_file = parts[parts.index("-l") + 1]
+                    remote_file = parts[parts.index("-r") + 1]
+                    try:
+                        unformatted_sid = session_manager.resolve_sid(raw_sid)
+                        sid = str(unformatted_sid)
 
-                raw_sid = parts[parts.index("-i") + 1]
-                local_file = parts[parts.index("-l") + 1]
-                remote_file = parts[parts.index("-r") + 1]
+                    except Exception as e:
+                        print(brightred + f"Invalid session or alias: {raw_sid}")
 
-                if "\\" not in remote_file:
-                    print("Use double backslashes when specifying file paths.")
+                    session = session_manager.sessions[sid]
+                    meta = session.metadata
+                except Exception as e:
+                    print(brightred + f"ERROR: {e}")
+
+                if "\\" not in remote_file and meta.get("os", "").lower() == "windows":
+                    print(brightred + "Use double backslashes when specifying file paths.")
                     continue
 
-                sid = session_manager.resolve_sid(raw_id)
+                
                 if not sid:
-                    print(f"Invalid session or alias: {raw_id}")
+                    print(brightred + f"Invalid session or alias: {raw_id}")
                     continue
 
                 """if sid not in session_manager.sessions:
                     print("Invalid session ID.")
                     continue"""
 
+
                 if session_manager.is_http_session(sid):
                     shell.upload_file_http(sid, local_file, remote_file)
                 elif session_manager.is_tcp_session(sid):
                     shell.upload_file_tcp(sid, local_file, remote_file)
                 else:
-                    print("Unknown session type.")
+                    print(brightred + "Unknown session type.")
 
             except:
                 continue
@@ -131,7 +168,7 @@ def operator_loop():
                 port = int(port)
                 threading.Thread(target=http_handler.start_http_listener, args=(ip, port), daemon=True).start()
             except:
-                print("Usage: start http <ip> <port>")
+                print(brightyellow + "Usage: start http <ip> <port>")
 
         elif user.startswith("start tcp"):
             try:
@@ -139,7 +176,7 @@ def operator_loop():
                 port = int(port)
                 threading.Thread(target=tcp_listener.start_tcp_listener, args=(ip, port), daemon=True).start()
             except:
-                print("Usage: start tcp <ip> <port>")
+                print(brightyellow + "Usage: start tcp <ip> <port>")
 
         elif user == "listeners":
             utils.list_listeners()
@@ -157,27 +194,27 @@ def operator_loop():
                     elif session_manager.is_tcp_session(real_sid):
                         shell.interactive_tcp_shell(real_sid)
                     else:
-                        print("Unknown session type.")
+                        print(brightred + "Unknown session type.")
                 else:
-                    print("Invalid session ID.")
+                    print(brightred + "Invalid session ID.")
             except Exception as e:
                 print(e)
-                print("Usage: shell <session_id>")
+                print(brightyellow + "Usage: shell <session_id>")
 
         elif user.startswith("alias"):
             parts = shlex.split(user)
             if len(parts) != 3:
-                print("Usage: alias <OLD_SID_or_ALIAS> <NEW_ALIAS>")
+                print(brightyellow + "Usage: alias <OLD_SID_or_ALIAS> <NEW_ALIAS>")
                 continue
 
             old, new = parts[1], parts[2]
             real = session_manager.resolve_sid(old)
             if not real:
-                print(f"No such session or alias: {old}")
+                print(brightred + f"No such session or alias: {old}")
                 continue
 
             session_manager.set_alias(new, real)
-            print(f"Alias set: {new!r} → {real}")
+            print(brightgreen + f"Alias set: {new!r} → {real}")
             continue
 
         elif user.startswith("generate"):
@@ -185,7 +222,7 @@ def operator_loop():
             parts = shlex.split(user)
 
             if "-p" not in parts:
-                print("You must specify payload type first with -p")
+                print(brightyellow + "You must specify payload type first with -p")
                 continue
 
             # Extract payload type early
@@ -214,14 +251,14 @@ def operator_loop():
                 parser.add_argument("--beacon_interval", required=True)
 
             else:
-                print(f"Unknown payload type: {payload_type}")
+                print(brightred + f"Unknown payload type: {payload_type}")
                 continue
 
             # Parse remaining args
             try:
                 args = parser.parse_args(parts[1:])
             except SystemExit:
-                print(utils.commands["generate"])
+                print(brightyellow + utils.commands["generate"])
                 continue
 
             # Call generators
@@ -234,18 +271,82 @@ def operator_loop():
             with open(args.output, "w") as f:
                 f.write(raw)
 
-            print(f"[+] Payload written to {args.output}")
+            print(brightgreen + f"[+] Payload written to {args.output}")
             continue
+
+        elif user.startswith("search"):
+            modules = search_modules()
+            for m in modules:
+                print(f"- {m}")
+            continue
+
+        elif user.startswith("use"):
+            parts = user.split()
+            if len(parts) != 2:
+                print(brightyellow + "Usage: use <module_name>")
+                continue
+
+            modname = parts[1]
+            current_module = load_module(modname)
+    
+            if not current_module:
+                continue
+
+            while True:
+                subcmd = input(brightblue + f"module({current_module.name}) > ").strip()
+
+                if not subcmd:
+                    continue
+        
+                if subcmd in ("back", "exit", "quit", "leave"):
+                    break
+
+                elif subcmd == "show options":
+                    current_module.show_options()
+
+                elif subcmd == "info":
+                    print(brightyellow + f"\nModule: {current_module.name}\n")
+                    print(brightgreen + f"Description: {current_module.description}\n")
+                    current_module.show_options()
+
+                elif subcmd.startswith("set "):
+                    _, key, val = subcmd.split(" ", 2)
+
+                    try:
+                        current_module.set_option(key, val)
+
+                    except KeyError as e:
+                        print(e)
+
+                elif subcmd in ("run", "exploit", "RUN", "EXPLOIT", "pwn", "PWN"):
+                    current_module.run()
+
+                elif subcmd in ("help", "?"):
+                    print(brightyellow + "\nModule Help Menu:\n")
+                    print(brightgreen + f"""
+show options         - View all configurable options for this module
+set <option> <val>   - Set a value for a required or optional field
+run                  - Execute the module logic using configured options
+info                 - Display module metadata including description and options
+back                 - Exit module and return to main C2 prompt
+help                 - Display this help menu
+""")
+
+                else:
+                    print(brightred + f"Unknown command: {subcmd}")
+                    print(brightyellow + "Type 'help' to see available commands.")
+
 
         elif user in ("exit", "quit"):
             utils.shutdown()
-            print("Exiting.")
-            os._exit(0)
+            print(brightyellow + "Exiting.")
+            exit(0)
 
         else:
             #print("TEST")
-            print("Unknown command.")
+            print(brightred + "Unknown command.")
 
 if __name__ == "__main__":
     # NO MORE PRINTER THREAD
+    print_banner()
     operator_loop()

@@ -5,6 +5,16 @@ import threading
 from core import session_manager, utils
 import random
 import string
+import os,sys,subprocess
+
+from colorama import init, Fore, Style
+brightgreen = Style.BRIGHT + Fore.GREEN
+brightyellow = Style.BRIGHT + Fore.YELLOW
+brightred = Style.BRIGHT + Fore.RED
+brightblue = Style.BRIGHT + Fore.BLUE
+
+PROMPT = brightblue + "GunnerC2 > "
+
 
 class C2HTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -13,11 +23,11 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
         if not sid:
             sid = generate_http_session_id()
             session_manager.register_http_session(sid)
-            print(f"\n[+] New HTTP agent: {sid}")
+            print(brightgreen + f"\n[+] New HTTP agent: {sid}")
         else:
             if sid not in session_manager.sessions:
                 session_manager.register_http_session(sid)
-                print(f"\n[+] New HTTP agent: {sid}")
+                print(brightgreen + f"\n[+] New HTTP agent: {sid}")
 
         if not sid:
             self.send_response(400)
@@ -26,7 +36,7 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
         if sid not in session_manager.sessions:
             session_manager.register_http_session(sid)
-            print(f"\n[+] New HTTP agent: {sid}")
+            print(brightgreen + f"\n[+] New HTTP agent: {sid}")
 
         session = session_manager.sessions[sid]
         try:
@@ -101,8 +111,10 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
         return
 
 def start_http_listener(ip, port):
+    print(brightyellow + f"[+] HTTP listener started on {ip}:{port}\n")
+    #sys.stdout.write(PROMPT)
+    #sys.stdout.flush()
     httpd = HTTPServer((ip, port), C2HTTPRequestHandler)
-    print(f"[+] HTTP listener started on {ip}:{port}")
     utils.http_listener_sockets[f"http-{ip}:{port}"] = httpd
     httpd.serve_forever()
 

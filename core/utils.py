@@ -3,6 +3,12 @@ import string
 import os
 from core import session_manager, sessions
 
+from colorama import init, Fore, Style
+brightgreen = Style.BRIGHT + Fore.GREEN
+brightyellow = Style.BRIGHT + Fore.YELLOW
+brightred = Style.BRIGHT + Fore.RED
+brightblue = Style.BRIGHT + Fore.BLUE
+
 tcp_listener_sockets = {}
 http_listener_sockets = {}
 
@@ -14,10 +20,10 @@ def gen_session_id():
 
 def list_sessions():
     if not session_manager.sessions:
-        print("No active sessions.")
+        print(brightyellow + "No active sessions.")
 
-    print(f"{'SID':<20} {'Alias':<15} {'Transport':<10} {'Hostname':<20} {'User':<25} {'OS':<10} {'Arch':<10}")
-    print("-" * 110)
+    print(brightgreen + (f"{'SID':<20} {'Alias':<15} {'Transport':<10} {'Hostname':<20} {'User':<25} {'OS':<10} {'Arch':<10}"))
+    print(brightgreen +("-" * 110))
 
     for sid, session in session_manager.sessions.items():
         transport = session.transport
@@ -37,38 +43,38 @@ def list_sessions():
 
 
         if sid is None or transport is None or hostname is None or user is None or os_info is None or arch is None or alias is None:
-            print("Fetching metadata from agent please wait and run command again")
+            print(brightyellow + "Fetching metadata from agent please wait and run command again")
             continue
         else:
-            print(f"{sid:<20} {alias:<15} {transport:<10} {hostname:<20} {user:<25} {os_info:<10} {arch:<10}")
+            print(brightred + (f"{sid:<20} {alias:<15} {transport:<10} {hostname:<20} {user:<25} {os_info:<10} {arch:<10}"))
 
 
 def list_listeners():
     if not tcp_listener_sockets and not http_listener_sockets:
-        print("No active listeners.")
+        print(brightyellow + "No active listeners.")
     else:
         if http_listener_sockets:
-            print("[HTTP Listeners]")
+            print(brightgreen + "[HTTP Listeners]")
             for name in http_listener_sockets:
-                print(f"- {name}")
+                print(brightgreen + (f"- {name}"))
         if tcp_listener_sockets:
-            print("[TCP Listeners]")
+            print(brightgreen + "[TCP Listeners]")
             for name in tcp_listener_sockets:
-                print(f"- {name}")
+                print(brightgreen + (f"- {name}"))
 
 def shutdown():
     for name, sock in tcp_listener_sockets.items():
         try:
             sock.close()
             #print("TEST")
-            print(f"Closed TCP {name}")
+            print(brightyellow + f"Closed TCP {name}")
         except:
             pass
 
     for name, httpd in http_listener_sockets.items():
         try:
             httpd.shutdown()
-            print(f"Closed HTTP {name}")
+            print(brightyellow + f"Closed HTTP {name}")
         except:
             pass
 
@@ -108,16 +114,22 @@ Example (TCP):
 
 Example (HTTP):
   generate -f ps1 -obs 2 -p http-win -lh 192.168.2.228 -lp 8080 --beacon_interval 5 -o payload.ps1
+""",
+    "download": """download -i <session_id> -f <remote_file> -o <local_file>\n-i <session_id>   Specify the session ID from which to download the file.\n-f <remote_file>  The path of the remote file to download.\n-o <local_file>   The local path where the file will be saved.\n\nExample:\ndownload -i 12345 -f /home/user/file.txt -o /tmp/file.txt""",
+    "upload": """upload -i <session_id> -l <local_file> -r <remote_file>\n-i <session_id>   Specify the session ID to which to upload the file.\n-l <local_file>   The local file to upload.\n-r <remote_file>  The path on the remote system to upload the file to.\n\nExample:\nupload -i 12345 -l /tmp/localfile.txt -r /home/user/remotefile.txt""",
+    "banner": """banner
+Clears the screen and displays the GUNNER ASCII-art banner.
+Example: banner
 """
 }
 
 
 def print_help(cmd=None):
     if cmd is None:
-        print("\nAvailable Commands:\n")
+        print(brightyellow + "\nAvailable Commands:\n")
         for key in commands:
-            print(f"  {key}")
-        print("\nUsage: help or help <command> [subcommand]\n")
+            print(brightgreen + f"  {key}")
+        print(brightyellow + "\nUsage: help or help <command> [subcommand]\n")
         return
 
     parts = cmd.split()
@@ -126,13 +138,13 @@ def print_help(cmd=None):
     if len(parts) == 1:
         c = parts[0]
         if c not in commands:
-            print(f"No help available for '{c}'.")
+            print(brightyellow + f"No help available for '{c}'.")
             return
 
         if isinstance(commands[c], str):
-            print(f"\n{commands[c]}\n")
+            print(brightgreen + f"\n{commands[c]}\n")
         elif isinstance(commands[c], dict):
-            print(f"\n{commands[c]['_desc']}\n")
+            print(brightgreen + f"\n{commands[c]['_desc']}\n")
         return
 
     # Nested help (subcommands)
@@ -142,9 +154,9 @@ def print_help(cmd=None):
             if sub in commands[c]:
                 print(f"\n{commands[c][sub]}\n")
             else:
-                print(f"No help available for '{cmd}'.")
+                print(brightyellow + f"No help available for '{cmd}'.")
         else:
-            print(f"No help available for '{cmd}'.")
+            print(brightyellow + f"No help available for '{cmd}'.")
         return
 
-    print("Too deep nesting in help. Only 'help' or 'help <command> [sub]' allowed.")
+    print(brightyellow + "Too deep nesting in help. Only 'help' or 'help <command> [sub]' allowed.")

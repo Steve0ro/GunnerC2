@@ -120,6 +120,13 @@ Example (HTTP):
     "banner": """banner
 Clears the screen and displays the GUNNER ASCII-art banner.
 Example: banner
+""",
+"search": """search <keyword>
+Searches for available modules that match the provided keyword. Supports partial matching.
+
+Example:
+  search whoami
+  search windows/x64
 """
 }
 

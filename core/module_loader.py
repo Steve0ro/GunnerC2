@@ -9,22 +9,55 @@ brightblue = Style.BRIGHT + Fore.BLUE
 
 MODULE_DIR = os.path.join(os.path.dirname(__file__), "modules")
 
-def search_modules():
-    return [
-        file[:-3]
-        for file in os.listdir(MODULE_DIR)
-        if file.endswith(".py") and file != "module_base.py" and not file.startswith("__")
-    ]
+def discover_module_files(base_dir):
+    modules = []
+    for root, dirs, files in os.walk(base_dir):
+        for file in files:
+            if file.endswith(".py") and not file.startswith("__"):
+                rel_path = os.path.relpath(os.path.join(root, file), MODULE_DIR)
+                modules.append(rel_path.replace(os.sep, "/")[:-3])  # Strip .py
+    return modules
 
-def load_module(name):
+def search_modules(searchterm):
     try:
-        module_path = os.path.join(MODULE_DIR, f"{name}.py")
+        keyword = searchterm.lower()
+
+    except Exception as e:
+        print(brightred + f"[-] ERROR failed to search modules: {e}")
+
+    all_modules = discover_module_files(MODULE_DIR)
+    if searchterm in ("all", "ALL"):
+        return all_modules
+
+    if keyword and searchterm not in ("all", "ALL"):
+        try:
+            result = [m for m in all_modules if keyword in m.lower()]
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to fetch modules: {e}")
+
+        if not result:
+            return None
+
+        elif result:
+            return result
+
+        else:
+            return None
+
+    else:
+        return None
+
+def load_module(slash_path):  # e.g., windows/x64/post_exploitation/hashdump
+    try:
+        parts = slash_path.split("/")
+        module_path = os.path.join(MODULE_DIR, *parts) + ".py"
 
         if not os.path.isfile(module_path):
             print(brightred + f"[-] Module file not found: {module_path}")
             return None
 
-        spec = importlib.util.spec_from_file_location(name, module_path)
+        spec = importlib.util.spec_from_file_location(slash_path.replace("/", "_"), module_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
@@ -35,9 +68,7 @@ def load_module(name):
         return instance
 
     except IndexError:
-        print(brightred + f"[!] Failed: No class ending in 'module' found in {name}.py")
-
+        print(brightred + f"[!] Failed: No class ending in 'module' found in {slash_path}.py")
     except Exception as e:
         print(brightred + f"[!] Error loading module: {e}")
-
     return None

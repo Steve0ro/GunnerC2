@@ -275,10 +275,36 @@ def operator_loop():
             continue
 
         elif user.startswith("search"):
-            modules = search_modules()
-            for m in modules:
-                print(f"- {m}")
-            continue
+            parts = user.split()
+            if len(parts) < 2:
+                utils.print_help(parts[0])
+
+            elif parts[1] in ("all", "ALL"):
+                modules = search_modules()
+                for m in modules:
+                    print(brightgreen + f"[*] {m}")
+
+            elif len(parts) > 2:
+                print(brightred + f"[-] ERROR too many arguments for search command.")
+                utils.print_help(parts[0])
+
+            elif len(parts) == 2 and parts[1] not in ("ALL", "all"):
+                keyword = parts[1]
+                modules = search_modules(keyword)
+
+                if modules is None:
+                    print(brightred + f"[-] ERROR failed to find module matching the keyword {keyword}")
+
+                else:
+                    for m in modules:
+                        print(brightgreen + f"[*] {m}")
+
+            else:
+                try:
+                    utils.print_help(parts[0])
+
+                except Exception as e:
+                    print(brightred + f"[-] ERROR an unknown error as ocurred: {e}")
 
         elif user.startswith("use"):
             parts = user.split()
@@ -319,7 +345,17 @@ def operator_loop():
                         print(e)
 
                 elif subcmd in ("run", "exploit", "RUN", "EXPLOIT", "pwn", "PWN"):
-                    current_module.run()
+                    try:
+                        check = current_module.validate()
+                        if check is True:
+                            current_module.run()
+
+                        elif check is not True:
+                            print(brightred + f"[!] Missing required options: {', '.join(check)}")
+
+                    except Exception as e:
+                        print(brightred + f"[-] ERROR failed to run argument check: {e}\n")
+                        print(brightred + "Try running the command again.")
 
                 elif subcmd in ("help", "?"):
                     print(brightyellow + "\nModule Help Menu:\n")

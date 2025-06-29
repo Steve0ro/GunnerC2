@@ -20,6 +20,13 @@ class ModuleBase:
     description = None
     options = {}
 
+    def validate(self):
+        missing = [k for k, v in self.options.items() if v.get("required") and not v.get("value")]
+        if missing:
+            return missing
+
+        return True
+
     def show_options(self):
         print(brightyellow + f"\nOptions for module {self.name}:\n")
         for opt, meta in self.options.items():

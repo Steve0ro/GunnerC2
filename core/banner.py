@@ -1,8 +1,8 @@
 from colorama import init, Fore, Style
-brightgreen = Style.BRIGHT + Fore.GREEN
-brightyellow = Style.BRIGHT + Fore.YELLOW
-brightred = Style.BRIGHT + Fore.RED
-brightblue = Style.BRIGHT + Fore.BLUE
+brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
+brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
+brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 
 
 def print_banner():

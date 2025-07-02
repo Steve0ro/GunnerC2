@@ -7,28 +7,116 @@ import os
 import shlex
 import argparse
 import subprocess
+import rlcompleter
+import socket
+import json
+import base64
+import queue
 
 from core.module_loader import load_module
-from core.module_loader import search_modules
-from core import http_handler, tcp_listener, shell, session_manager, utils, banner
+from core.module_loader import search_modules, discover_module_files
+from core import http_handler, tcp_listener, shell, session_manager, utils, banner, portfwd
+from core.background_module_runner import run_in_background, list_jobs
+from core.utils import portforwards, unregister_forward, list_forwards
 
 from core.payload_generator import *
 from core.banner import print_banner
 
 from colorama import init, Fore, Style
-brightgreen = Style.BRIGHT + Fore.GREEN
-brightyellow = Style.BRIGHT + Fore.YELLOW
-brightred = Style.BRIGHT + Fore.RED
-brightblue = Style.BRIGHT + Fore.BLUE
+brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
+brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
+brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
+
+# store last search results and the currently selected module
+search_results = []
+current_module = None
 
 PROMPT = brightblue + "GunnerC2 > "
+
+MODULE_DIR = os.path.join(os.path.dirname(__file__), "core/modules")  # ensure correct path
+
+COMMANDS = sorted(utils.commands.keys())
+
+
+def get_all_modules():
+    return discover_module_files(MODULE_DIR)
+
+def completer(text, state):
+    buf = readline.get_line_buffer().lstrip()
+    tokens = buf.split()
+    # first token: complete top-level commands
+
+    if len(tokens) <= 1:
+        options = [c for c in COMMANDS if c.startswith(text)]
+
+    else:
+        cmd = tokens[0]
+        arg = text
+        # complete module names or numbers after "use"
+
+        if cmd == "use":
+            mods = get_all_modules()
+            options = [m for m in mods if m.startswith(arg)]
+            options += [str(i+1) for i in range(len(mods)) if str(i+1).startswith(arg)]
+
+        # complete module names after "search"
+        elif cmd == "search":
+            mods = get_all_modules()
+            options = [m for m in mods if m.startswith(arg)] + ["all"]
+
+        # complete option keys inside module
+        elif cmd == "set" and current_module:
+            opts = list(current_module.options.keys())
+            options = [o for o in opts if o.startswith(arg)]
+
+        else:
+            options = []
+    try:
+        return options[state]
+
+    except IndexError:
+        return None
 
 
 def bind_keys():
     readline.parse_and_bind('"\\C-l": clear-screen')
 
+    # enable tab completion
+    readline.parse_and_bind("tab: complete")
+    readline.set_completer(completer)
+
+def upload_any(sid, local_path, remote_path):
+    """
+    Upload either a single file or an entire folder, over HTTP or TCP, 
+    depending on the session transport and the remote OS.
+    """
+    # resolve session & metadata
+    session = session_manager.sessions.get(sid)
+    if not session:
+        print(brightred + f"[!] No such session: {sid}")
+        return
+
+    os_type = session.metadata.get("os", "").lower()
+    is_dir = os.path.isdir(local_path)
+    if not (os.path.exists(local_path)):
+        print(brightred + f"[!] Local path not found: {local_path}")
+        return
+    
+    if is_dir:
+        return True
+
+    elif not is_dir:
+        return False
+
+    else:
+        print(brightred + f"[-] ERROR an error ocurred when checking the object type.")
+
+
+
 def operator_loop():
     bind_keys()
+    global search_results, current_module
     while True:
         user = input(PROMPT).strip()
 
@@ -50,7 +138,7 @@ def operator_loop():
                 utils.print_help(parts[1])
 
             elif len(parts) == 3:
-                utils.print_help(parts[2])
+                utils.print_help(f"{parts[1]} {parts[2]}")
 
             else:
                 print(brightyellow + "Usage: help or help <command> [subcommand]")
@@ -100,10 +188,29 @@ def operator_loop():
                     continue"""
 
                 if session_manager.is_http_session(sid):
-                    shell.download_file_http(sid, remote_file, local_file)
+                    check = upload_any(sid, local_file, remote_file)
+                    if check is True:
+                        shell.download_folder_http(sid, remote_file, local_file)
+
+                    elif check is False:
+                        shell.download_file_http(sid, remote_file, local_file)
+
+                    else:
+                        pass
+
+                elif session_manager.is_tcp_session(sid):
+                    check = upload_any(sid, local_file, remote_file)
+                    if check is True:
+                        shell.download_folder_tcp(sid, remote_file, local_file)
+
+                    elif check is False:
+                        shell.download_file_tcp(sid, remote_file, local_file)
+
+                    else:
+                        pass
 
                 else:
-                    shell.download_file_tcp(sid, remote_file, local_file)
+                    print(brightred + f"[-] ERROR unsupported shell type.")
 
             except SystemExit:
                 print(brightgreen + "Run help for info: help or help <command> [subcommand]")
@@ -151,9 +258,16 @@ def operator_loop():
 
 
                 if session_manager.is_http_session(sid):
-                    shell.upload_file_http(sid, local_file, remote_file)
+                    if os.path.isdir(local_file):
+                        shell.upload_folder_http(sid, local_file, remote_file)
+                    else:
+                        shell.upload_file_http(sid, local_file, remote_file)
+
                 elif session_manager.is_tcp_session(sid):
-                    shell.upload_file_tcp(sid, local_file, remote_file)
+                    if os.path.isdir(local_file):
+                        shell.upload_folder_tcp(sid, local_file, remote_file)
+                    else:
+                        shell.upload_file_tcp(sid, local_file, remote_file)
                 else:
                     print(brightred + "Unknown session type.")
 
@@ -215,6 +329,12 @@ def operator_loop():
 
             session_manager.set_alias(new, real)
             print(brightgreen + f"Alias set: {new!r} → {real}")
+
+            old_display = old
+            for entry in portforwards.values():
+                if entry["sid"] == old_display:
+                    entry["sid"] = new
+
             continue
 
         elif user.startswith("generate"):
@@ -280,9 +400,15 @@ def operator_loop():
                 utils.print_help(parts[0])
 
             elif parts[1] in ("all", "ALL"):
-                modules = search_modules()
-                for m in modules:
-                    print(brightgreen + f"[*] {m}")
+                modules = search_modules(parts[1])
+
+                if modules:
+                    search_results = modules
+                    for idx, m in enumerate(search_results, 1):
+                        print(brightyellow + f"[{idx}] " + brightgreen + m)
+
+                else:
+                    print(brightred + f"[-] ERROR failed to find module matching the keyword {keyword}")
 
             elif len(parts) > 2:
                 print(brightred + f"[-] ERROR too many arguments for search command.")
@@ -296,8 +422,10 @@ def operator_loop():
                     print(brightred + f"[-] ERROR failed to find module matching the keyword {keyword}")
 
                 else:
-                    for m in modules:
-                        print(brightgreen + f"[*] {m}")
+                    # store and display numbered modules
+                    search_results = modules
+                    for idx, m in enumerate(search_results, 1):
+                        print(brightyellow + f"[{idx}] " + brightgreen + m)
 
             else:
                 try:
@@ -313,6 +441,17 @@ def operator_loop():
                 continue
 
             modname = parts[1]
+
+            # if numeric, pick from last search results
+            if modname.isdigit():
+                idx = int(modname) - 1
+                if idx < 0 or idx >= len(search_results):
+                    print(brightred + f"Invalid module number: {modname}")
+                    continue
+                modname = search_results[idx]
+            else:
+                modname = modname
+
             current_module = load_module(modname)
     
             if not current_module:
@@ -344,18 +483,33 @@ def operator_loop():
                     except KeyError as e:
                         print(e)
 
-                elif subcmd in ("run", "exploit", "RUN", "EXPLOIT", "pwn", "PWN"):
-                    try:
-                        check = current_module.validate()
-                        if check is True:
+
+                elif subcmd.lower().split()[0] in ("run", "exploit", "pwn"):
+                    parts = shlex.split(subcmd)
+                    # detect and strip trailing '&'
+                    wants_bg = False
+                    if parts[-1] == "&":
+                        wants_bg = True
+                        parts = parts[:-1]
+                    else:
+                        ans = input(brightyellow + "[*] Run in background? [y/N]: ").strip().lower()
+                        if ans in ("y", "yes"):
+                            wants_bg = True
+
+                    # validate before launching
+                    missing = current_module.validate()
+                    if missing is not True:
+                        print(brightred + f"[!] Missing required options: {', '.join(missing)}")
+                        continue
+
+                    if wants_bg:
+                        run_in_background(current_module)
+
+                    else:
+                        try:
                             current_module.run()
-
-                        elif check is not True:
-                            print(brightred + f"[!] Missing required options: {', '.join(check)}")
-
-                    except Exception as e:
-                        print(brightred + f"[-] ERROR failed to run argument check: {e}\n")
-                        print(brightred + "Try running the command again.")
+                        except Exception as e:
+                            print(brightred + f"[-] ERROR running module: {e}")
 
                 elif subcmd in ("help", "?"):
                     print(brightyellow + "\nModule Help Menu:\n")
@@ -368,9 +522,173 @@ back                 - Exit module and return to main C2 prompt
 help                 - Display this help menu
 """)
 
+
+                elif subcmd.split()[0] == "jobs":
+                    parts = shlex.split(subcmd)
+                    parser = argparse.ArgumentParser(prog="jobs", add_help=False)
+                    parser.add_argument("--print", action="store_true", dest="want_output")
+                    parser.add_argument("-i", type=int, dest="job_id")
+
+                    try:
+                        args = parser.parse_args(parts[1:])
+
+                    except SystemExit:
+                        print(brightyellow + "Usage: jobs [--print] [-i <job_id>]")
+                        continue
+
+                    if args.want_output:
+                        if args.job_id is None:
+                            print(brightyellow + "Usage: jobs --print -i <job_id>")
+                        else:
+                            out = get_job_output(args.job_id)
+                            if out is None:
+                                print(brightred + f"No such job: {args.job_id}")
+                            else:
+                                print(brightblue + f"\n=== Output for job {args.job_id} ===\n")
+                                print(out)
+                    else:
+                        list_jobs()
+
+                    continue
+
                 else:
                     print(brightred + f"Unknown command: {subcmd}")
                     print(brightyellow + "Type 'help' to see available commands.")
+
+        elif user.startswith("kill"):
+            parts = shlex.split(user)
+            if len(parts) == 3 and parts[1] == "-i":
+                raw = parts[2]
+                sid = session_manager.resolve_sid(raw)
+                display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), raw)
+
+                if not sid or sid not in session_manager.sessions:
+                    print(brightred + f"[!] Invalid session or alias: {raw}")
+                else:
+                    if session_manager.is_http_session(sid):
+                        if session_manager.kill_http_session(sid):
+                            print(brightyellow + f"[*] Killed HTTP session {display}")
+                        else:
+                            print(brightred + f"[!] No such HTTP session {display}")
+
+                    elif session_manager.is_tcp_session(sid):
+                        # close socket and remove from sessions
+                        session_manager.sessions[sid].handler.close()
+                        del session_manager.sessions[sid]
+                        print(brightyellow + f"[*] Closed TCP session {display}")
+
+                    else:
+                        print(brightred + f"[!] Unknown session type for {display}")
+            else:
+                print(brightyellow + "Usage: kill -i <session_id>")
+            continue
+
+        elif user.startswith("jobs"):
+            try:
+                parts = shlex.split(user)
+                parser = argparse.ArgumentParser(prog="jobs", add_help=False)
+                parser.add_argument("--print", action="store_true", dest="want_output")
+                parser.add_argument("-i", type=int, dest="job_id")
+
+                try:
+                    args = parser.parse_args(parts[1:])
+
+                except SystemExit:
+                    print(brightyellow + "Usage: jobs [--print] [-i <job_id>]")
+                    continue
+
+                if args.want_output:
+                    if args.job_id is None:
+                        print(brightyellow + "Usage: jobs --print -i <job_id>")
+                    else:
+                        out = get_job_output(args.job_id)
+                        if out is None:
+                            print(brightred + f"No such job: {args.job_id}")
+                        else:
+                            print(brightblue + f"\n=== Output for job {args.job_id} ===\n")
+                            print(out)
+                else:
+                    list_jobs()
+
+                continue
+
+            except Exception as e:
+                print(brightred + f"[-] ERROR failed to list jobs: {e}")
+            continue
+
+        elif user.startswith("portfwd"):
+            parts = shlex.split(user)
+
+            if len(parts) > 1:
+                subcmd = parts[1]
+
+                if subcmd == "add":
+                # parse flags: -i, -lh, -lp, -rh, -rp
+                    try:
+                        opts = dict(zip(parts[2::2], parts[3::2]))
+                        sid = opts['-i']
+                        try:
+                            local_host = opts.get('-lh', '127.0.0.1')
+
+                        except Exception as e:
+                            local_host = "127.0.0.1"
+
+                        local_port = int(opts['-lp'])
+                        remote_host = opts['-rh']
+                        remote_port = int(opts['-rp'])
+                        chisel_port = int(opts['-cp'])
+
+                    except Exception:
+                        print(brightyellow + "Usage: portfwd add -i <sid> -lh <local_host> -lp <local_port> -rh <remote_host> -rp <remote_port> -cp <chisel_port>")
+                        continue
+
+                    sid = session_manager.resolve_sid(sid)
+                    
+                    if not sid:
+                        print(brightred + "Invalid session.")
+                        continue
+
+                    rid = str(len(portforwards) + 1)
+                    t = threading.Thread(
+                    target=portfwd.portfwd_listener,
+                    args=(rid, sid, local_host, local_port, remote_host, remote_port, chisel_port),
+                    daemon=True
+                    )
+                    t.start()
+                    print(brightgreen + f"[+] Forward #{rid} {local_host}:{local_port} → {sid} → {remote_host}:{remote_port}")
+
+                elif subcmd == "list":
+                    for rid, m in list_forwards().items():
+                        print(brightgreen + f"{rid}: {m['local_host']}:{m['local']} → {m['sid']} → {m['remote']}")
+
+                elif subcmd == "delete":
+                    try:
+                        idx = parts.index('-i')
+                        rid = parts[idx+1]
+
+                    except Exception:
+                        print(brightyellow + "Usage: portfwd delete -i <rule_id>")
+                        continue
+
+                    if rid in portforwards:
+                        unregister_forward(rid)
+                        print(brightyellow + f"[+] Removed forward {rid}")
+                    else:
+                        print(brightred + "Unknown forward ID.")
+
+                else:
+                    print(brightyellow + "Usage:")
+                    print(brightyellow + "  portfwd add    -i <sid> -lh <local_host> -lp <local_port> -rh <remote_host> -rp <remote_port>")
+                    print(brightyellow + "  portfwd list")
+                    print(brightyellow + "  portfwd delete -i <rule_id>")
+
+            else:
+                    print(brightyellow + "Usage:")
+                    print(brightyellow + "  portfwd add    -i <sid> -lh <local_host> -lp <local_port> -rh <remote_host> -rp <remote_port>")
+                    print(brightyellow + "  portfwd list")
+                    print(brightyellow + "  portfwd delete -i <rule_id>")
+
+            
 
 
         elif user in ("exit", "quit"):

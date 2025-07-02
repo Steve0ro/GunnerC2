@@ -4,13 +4,14 @@ import os
 from core import session_manager, sessions
 
 from colorama import init, Fore, Style
-brightgreen = Style.BRIGHT + Fore.GREEN
-brightyellow = Style.BRIGHT + Fore.YELLOW
-brightred = Style.BRIGHT + Fore.RED
-brightblue = Style.BRIGHT + Fore.BLUE
+brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
+brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
+brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 
 tcp_listener_sockets = {}
 http_listener_sockets = {}
+portforwards = {}
 
 def gen_session_id():
     return '-'.join(
@@ -54,11 +55,11 @@ def list_listeners():
         print(brightyellow + "No active listeners.")
     else:
         if http_listener_sockets:
-            print(brightgreen + "[HTTP Listeners]")
+            print(brightgreen + "\n[HTTP Listeners]")
             for name in http_listener_sockets:
                 print(brightgreen + (f"- {name}"))
         if tcp_listener_sockets:
-            print(brightgreen + "[TCP Listeners]")
+            print(brightgreen + "\n[TCP Listeners]")
             for name in tcp_listener_sockets:
                 print(brightgreen + (f"- {name}"))
 
@@ -78,16 +79,100 @@ def shutdown():
         except:
             pass
 
+def register_forward(rule_id, sid, local_host, local_port, remote_host, remote_port, thread, listener):
+    """
+    Register an active port-forward rule.
+
+    Args:
+        rule_id (str): Unique identifier for this forward.
+        sid (str): Session ID.
+        local_host (str): Local host/interface to bind.
+        local_port (int): Local port to listen on.
+        remote_host (str): Remote host to forward to.
+        remote_port (int): Remote port to forward to.
+        thread (threading.Thread): Thread handling this forward.
+        listener (socket.socket): Listening socket for this forward.
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    portforwards[rule_id] = {
+        "sid": display,
+        "local_host": local_host,
+        "local": local_port,
+        "remote": f"{remote_host}:{remote_port}",
+        "thread": thread,
+        "listener": listener
+    }
+
+def unregister_forward(rule_id):
+    """
+    Remove and stop a port-forward rule, closing its listener and joining its thread.
+    """
+    entry = portforwards.pop(rule_id, None)
+    if not entry:
+        return
+        
+    try:
+        entry["listener"].close()
+
+    except:
+        pass
+
+    entry["thread"].join(timeout=1)
+
+def list_forwards():
+    """
+    Return all currently registered port-forward rules.
+    """
+    return portforwards
+
+
+
 commands = {
     "start": {
         "_desc": """start <subcommand>\nSubcommands:\n  start http <ip> <port>   Start HTTP listener\n  start tcp <ip> <port>    Start TCP listener\nType 'help start http' or 'help start tcp' for more details.""",
         "http": """start http <ip> <port>\nStarts an HTTP listener on the specified IP and port.\nExample: start http 0.0.0.0 443""",
         "tcp": """start tcp <ip> <port>\nStarts a TCP listener on the specified IP and port.\nExample: start tcp 0.0.0.0 9001"""
     },
+    "portfwd": {
+    "_desc": """portfwd <subcommand>
+Subcommands:
+  portfwd add    -i <sid> -lh <local_host> -lp <local_port> -rh <remote_host> -rp <remote_port> -cp <chisel_port>
+  portfwd list
+  portfwd delete -i <rule_id>
+
+Type 'help portfwd <subcommand>' for more details.""",
+    "add": """portfwd add -i <sid> -lh <local_host> -lp <local_port> -rh <remote_host> -rp <remote_port> -cp <chisel_port>
+Start a new port-forward on session <sid>. On Linux agents this will upload chisel and establish the reverse tunnel.
+
+Example:
+  portfwd add -i session123 -lh 127.0.0.1 -lp 8000 -rh 10.0.0.5 -rp 443 -cp 7070""",
+    "list": """portfwd list
+List all currently active port-forward rules.""",
+    "delete": """portfwd delete -i <rule_id>
+Remove the specified port-forward by rule ID.
+
+Example:
+  portfwd delete -i 1"""
+},
     "sessions": """sessions\nLists all active sessions with metadata: hostname, user, OS, architecture.""",
     "listeners": """listeners\nLists all currently running HTTP and TCP listeners.""",
     "alias": """alias <OLD_SID_or_ALIAS> <NEW_ALIAS>\nAssign an alias to a session ID for easier reference. Example: alias abc12-def34-ghi56 pwned""",
     "shell": """shell <session_id>\nStarts an interactive shell with a specific session ID.\nExample: shell gunner""",
+    "kill": """kill -i <session_id>\n\nTerminates the specified session (HTTP or TCP).\n\nExample:\n  kill -i abc123""",
+    "jobs": """jobs [--print] [-i <job_id>]
+Lists background jobs or prints a job’s buffered output.
+
+Usage:
+  jobs
+    List all background jobs with their ID, Module and Status.
+
+  jobs --print -i <job_id>
+    Show the captured stdout/stderr for the given job ID.
+
+Examples:
+  jobs
+  jobs --print -i 1
+""",
     "generate": """
 generate - Builds an agent payload.
 
@@ -127,6 +212,20 @@ Searches for available modules that match the provided keyword. Supports partial
 Example:
   search whoami
   search windows/x64
+""",
+"use": """use <module_name_or_number>
+Selects a module by its full path or the number shown in the last `search` results, then enters its module prompt.
+
+Inside the module prompt:
+  show options       - List all configurable options
+  set <opt> <value>  - Set a module option
+  info               - Show module description and options
+  run                - Execute the module
+  back               - Exit module prompt and return to main
+
+Examples:
+  use linux/privilege_escalation/linpeas
+  use 4
 """
 }
 
@@ -159,7 +258,7 @@ def print_help(cmd=None):
         c, sub = parts
         if c in commands and isinstance(commands[c], dict):
             if sub in commands[c]:
-                print(f"\n{commands[c][sub]}\n")
+                print(brightgreen + f"\n{commands[c][sub]}\n")
             else:
                 print(brightyellow + f"No help available for '{cmd}'.")
         else:

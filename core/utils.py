@@ -1,7 +1,9 @@
 import random
 import string
-import os
-from core import session_manager, sessions
+import os, sys, subprocess
+from core.session_handlers import session_manager, sessions
+import re
+import readline
 
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -10,8 +12,68 @@ brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 
 tcp_listener_sockets = {}
+tls_listener_sockets = {}
 http_listener_sockets = {}
+https_listener_sockets = {}
 portforwards = {}
+
+class SessionDefender:
+    def __init__(self):
+        self.is_active = True
+
+        # commands that spawn a new shell / interpreter on Windows
+        self.win_dangerous = {
+            "powershell", "powershell.exe", "cmd", "cmd.exe",
+            "curl", "wget", "telnet",
+            "python", "python3", "php", "ruby", "irb", "perl",
+            "jshell", "node", "ghci"
+        }
+
+        # editors & shells on Linux + same interpreters
+        self.linux_dangerous = {
+            "bash", "sh", "zsh", "tclsh",
+            "less", "more", "nano", "pico", "vi", "vim", "gedit", "atom", "emacs", "telnet"
+        } | self.win_dangerous
+
+        # regexes for unclosed quotes/backticks
+        self._pairings = [
+            (r"(?<!\\)'", r"'"),
+            (r'(?<!\\)"', r'"'),
+            (r"(?<!\\)`", r"`"),
+        ]
+
+    def inspect_command(self, os_type: str, cmd: str) -> bool:
+        """
+        Return True if the command is safe to send, False if it should be blocked.
+        """
+
+        if not cmd:
+            return True
+
+        if not self.is_active:
+            return True
+
+        # 1) Unclosed quotes/backticks
+        for pattern, char in self._pairings:
+            if len(re.findall(pattern, cmd)) % 2 != 0:
+                return False
+
+        # 2) Trailing backslash (Linux only)
+        if os_type == "linux" and cmd.rstrip().endswith("\\"):
+            return False
+
+        # 3) Dangerous binaries
+        first = cmd.strip().split()[0].lower()
+        if os_type == "windows":
+            if first in self.win_dangerous:
+                return False
+        else:
+            if first in self.linux_dangerous:
+                return False
+
+        # safe
+        return True
+
 
 def gen_session_id():
     return '-'.join(
@@ -51,16 +113,27 @@ def list_sessions():
 
 
 def list_listeners():
-    if not tcp_listener_sockets and not http_listener_sockets:
+    if not tcp_listener_sockets and not http_listener_sockets and not tls_listener_sockets and not https_listener_sockets:
         print(brightyellow + "No active listeners.")
     else:
         if http_listener_sockets:
             print(brightgreen + "\n[HTTP Listeners]")
             for name in http_listener_sockets:
                 print(brightgreen + (f"- {name}"))
+
+        if https_listener_sockets:
+            print(brightgreen + "\n[HTTPS Listeners]")
+            for name in https_listener_sockets:
+                print(brightgreen + (f"- {name}"))
+
         if tcp_listener_sockets:
             print(brightgreen + "\n[TCP Listeners]")
             for name in tcp_listener_sockets:
+                print(brightgreen + (f"- {name}"))
+
+        if tls_listener_sockets:
+            print(brightgreen + "\n[TLS Listeners]")
+            for name in tls_listener_sockets:
                 print(brightgreen + (f"- {name}"))
 
 def shutdown():
@@ -78,6 +151,25 @@ def shutdown():
             print(brightyellow + f"Closed HTTP {name}")
         except:
             pass
+
+
+def async_note(msg, prompt):
+    """
+    Prints msg on its own line, then re-draws `prompt`
+    and whatever the user has typed so far.
+    """
+    # 1) grab current buffer
+    buf = readline.get_line_buffer()
+
+    # 2) move to start-of-line and clear it
+    sys.stdout.write('\r\033[K')
+
+    # 3) print your note
+    print(msg)
+
+    # 4) redraw prompt + saved buffer
+    sys.stdout.write(prompt + buf)
+    sys.stdout.flush()
 
 def register_forward(rule_id, sid, local_host, local_port, remote_host, remote_port, thread, listener):
     """
@@ -129,10 +221,37 @@ def list_forwards():
 
 commands = {
     "start": {
-        "_desc": """start <subcommand>\nSubcommands:\n  start http <ip> <port>   Start HTTP listener\n  start tcp <ip> <port>    Start TCP listener\nType 'help start http' or 'help start tcp' for more details.""",
+        "_desc": """start <subcommand>\nSubcommands:\n  start http  <ip> <port>   Start HTTP listener\n  start https <ip> <port>   Start HTTPS listener\n  start tcp   <ip> <port>   Start TCP listener\n\nType 'help start http', 'help start https' or 'help start tcp' for more details.""",
         "http": """start http <ip> <port>\nStarts an HTTP listener on the specified IP and port.\nExample: start http 0.0.0.0 443""",
-        "tcp": """start tcp <ip> <port>\nStarts a TCP listener on the specified IP and port.\nExample: start tcp 0.0.0.0 9001"""
+        "https": """start https <ip> <port> [-c <certfile> -k <keyfile>]
+Starts an HTTPS listener on the specified IP and port. If no cert/key are provided, a self-signed certificate will be generated.
+
+Options:
+  -c <certfile>
+      Path to TLS certificate (PEM format)
+  -k <keyfile>
+      Path to TLS private key (PEM format)
+
+Examples:
+  start https 0.0.0.0 8443
+  start https 0.0.0.0 8443 -c cert.pem -k key.pem""",
+        "tcp": """start tcp <ip> <port> [--ssl] [-c <certfile> -k <keyfile>]
+Starts a TCP listener. By default runs raw TCP, add --ssl (and optionally -c/-k) to enable TLS.
+
+Options:
+  --ssl
+      Enable SSL/TLS on the listener
+  -c <certfile>
+      Path to TLS certificate (requires --ssl)
+  -k <keyfile>
+      Path to TLS private key (requires --ssl)
+
+Examples:
+  start tcp 0.0.0.0 9001                                  # raw TCP listener
+  start tcp 0.0.0.0 9001 --ssl                            # TLS with generated self-signed cert
+  start tcp 0.0.0.0 9001 --ssl -c cert.pem -k key.pem     # TLS with custom cert/key""",
     },
+
     "portfwd": {
     "_desc": """portfwd <subcommand>
 Subcommands:
@@ -155,10 +274,10 @@ Example:
   portfwd delete -i 1"""
 },
     "sessions": """sessions\nLists all active sessions with metadata: hostname, user, OS, architecture.""",
-    "listeners": """listeners\nLists all currently running HTTP and TCP listeners.""",
+    "listeners": """listeners\nLists all currently running HTTP, HTTPS, and TCP listeners.""",
     "alias": """alias <OLD_SID_or_ALIAS> <NEW_ALIAS>\nAssign an alias to a session ID for easier reference. Example: alias abc12-def34-ghi56 pwned""",
     "shell": """shell <session_id>\nStarts an interactive shell with a specific session ID.\nExample: shell gunner""",
-    "kill": """kill -i <session_id>\n\nTerminates the specified session (HTTP or TCP).\n\nExample:\n  kill -i abc123""",
+    "kill": """kill -i <session_id>\n\nTerminates the specified session (HTTP, HTTPS or TCP).\n\nExample:\n  kill -i abc123""",
     "jobs": """jobs [--print] [-i <job_id>]
 Lists background jobs or prints a job’s buffered output.
 
@@ -226,7 +345,15 @@ Inside the module prompt:
 Examples:
   use linux/privilege_escalation/linpeas
   use 4
-"""
+""",
+"shelldefence": """shelldefence <on|off>
+Toggle the Session-Defender runtime checks.
+
+Usage:
+  shelldefence on    Enable command‐inspection guard
+  shelldefence off   Disable command‐inspection guard""",
+  "gunnershell": """gunnershell <session_id_or_alias>
+Starts a Meterpreter-style Gunner subshell on the specified session."""
 }
 
 
@@ -266,3 +393,128 @@ def print_help(cmd=None):
         return
 
     print(brightyellow + "Too deep nesting in help. Only 'help' or 'help <command> [sub]' allowed.")
+
+
+# -----------------------------------------------------------------------------
+# GunnerShell mini–help
+# -----------------------------------------------------------------------------
+gunnershell_commands = {
+    "list":    "Show all available modules.",
+    "help":    "Show this help menu.",
+    "sessions": """sessions\nLists all active sessions with metadata: hostname, user, OS, architecture.""",
+    "alias": """alias <OLD_SID_or_ALIAS> <NEW_ALIAS>\nAssign an alias to a session ID for easier reference. Example: alias abc12-def34-ghi56 pwned""",
+    "exit":    "Exit the GunnerShell subshell and return to main prompt.",
+    "upload":  "Usage: upload <local_path> <remote_path>    Upload a file.",
+    "download":"Usage: download <remote_path> <local_path>  Download a file.",
+    "shell":   "Usage: shell    Drop into a full interactive shell.",
+    "switch": "switch <session_id>   Launch a Gunnershell on another session (can't switch to yourself).",
+    "portfwd": {
+        "_desc": """portfwd <subcommand>
+Subcommands:
+  portfwd add    -i <sid> -lh <local_host> -lp <local_port> -rh <remote_host> -rp <remote_port> -cp <chisel_port>
+  portfwd list
+  portfwd delete -i <rule_id>
+
+Type 'help portfwd <subcommand>' for more details.""",
+        "add": """portfwd add -i <sid> -lh <local_host> -lp <local_port> -rh <remote_host> -rp <remote_port> -cp <chisel_port>
+Start a new port-forward on session <sid>. On Linux agents this will upload chisel and establish the reverse tunnel.
+
+Example:
+  portfwd add -i session123 -lh 127.0.0.1 -lp 8000 -rh 10.0.0.5 -rp 443 -cp 7070""",
+        "list": """portfwd list
+List all currently active port-forward rules.""",
+        "delete": """portfwd delete -i <rule_id>
+Remove the specified port-forward by rule ID.
+
+Example:
+  portfwd delete -i 1""",
+    },
+
+    "modhelp":  "modhelp <module_name>\n    Show options and usage for the named module.",
+    "run":      "run <module_name> [opt=val]\n    Execute module with inline option assignments.",
+    "search": """search <keyword>
+Searches for available modules that match the provided keyword. Supports partial matching.
+
+Example:
+  search whoami
+  search windows/x64
+""",
+    # ────────────────────────────────────────────────────────────────────────────────
+    # File system commands help
+    # ────────────────────────────────────────────────────────────────────────────────
+    "ls":   "ls [<path>]\n    List files on the remote host (defaults to current working directory).",
+    "cat":  "cat <filepath>\n    Read and display the contents of the given file.",
+    "cd":   "cd <path>\n    Change the remote working directory to <path>.",
+    "pwd":  "pwd\n    Print the current remote working directory.",
+ }
+
+def print_gunnershell_help(cmd: str=None):
+    """Like print_help, but grouped and with two‐level detail."""
+    # 1) Top‐level: show grouped summary
+    if cmd is None:
+        core_cmds = {
+            "help":     "Help menu",
+            "exit":     "Exit the subshell and return to main prompt",
+            "list":     "List all available modules",
+            "upload":   "Upload a file to the session",
+            "download": "Download a file or directory",
+            "switch":  "Switch to another session's GunnerShell",
+            "shell":    "Drop into a full interactive shell",
+            "modhelp":  "Show module options for a module",
+            "run":      "Execute module with inline options",
+            "search":   "Filter available modules by keyword or show all",
+            "portfwd":  "Manage port-forwards on this session",
+        }
+        fs_cmds = {
+            "ls":       "List files on the remote host",
+            "cat":      "Print contents of a file",
+            "cd":       "Change remote working directory",
+            "pwd":      "Print remote working directory"
+        }
+
+        # print Core
+        print(brightyellow + "\nCore Commands\n=============\n")
+        for name, desc in core_cmds.items():
+            print(brightgreen + f"{name:<25} {desc}")
+        print()
+        # print File system
+        print(brightyellow + "File system Commands\n=====================\n")
+        for name, desc in fs_cmds.items():
+            print(brightgreen + f"{name:<25} {desc}")
+        print(brightyellow + "\nFor detailed help run: help <command> [subcommand]\n")
+        return
+
+    # 2) Single‐level detail: help <cmd>
+    parts = cmd.split()
+    if len(parts) == 1:
+        c = parts[0]
+        entry = gunnershell_commands.get(c)
+        if entry is None:
+            print(brightyellow + f"No help available for '{c}'.\n")
+        elif isinstance(entry, str):
+            print(brightgreen + f"\n{entry}\n")
+        else:
+            # nested dict: print the overview
+            print(brightgreen + f"\n{entry.get('_desc')}\n")
+        return
+
+    # 3) Two‐level detail: help <cmd> <subcmd>
+    if len(parts) == 2:
+        c, sub = parts
+        entry = gunnershell_commands.get(c)
+        if isinstance(entry, dict) and sub in entry:
+            print(brightgreen + f"\n{entry[sub]}\n")
+        else:
+            print(brightyellow + f"No help available for '{c} {sub}'.\n")
+        return
+
+    # 4) Too deep
+    print(brightyellow +
+          "Too deep nesting in help. Only:\n"
+          "  help\n"
+          "  help <command>\n"
+          "  help <command> <subcommand>\n")
+
+
+
+defender = SessionDefender()

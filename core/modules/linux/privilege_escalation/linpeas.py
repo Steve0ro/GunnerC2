@@ -92,7 +92,7 @@ class Module(ModuleBase):
                         print(brightred + "[!] Could not read local output file.")
 
         # HTTP session branch
-        elif session_manager.is_http_session(sid):
+        elif session_manager.sessions[sid].transport in ("http", "https"):
             try:
                 print(brightyellow + "[*] Uploading linPEAS to /dev/shm...")
                 shell.upload_file_http(sid, linpeas_path, remote_script)

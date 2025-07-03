@@ -12,12 +12,16 @@ import socket
 import json
 import base64
 import queue
+import atexit
 
 from core.module_loader import load_module
 from core.module_loader import search_modules, discover_module_files
-from core import http_handler, tcp_listener, shell, session_manager, utils, banner, portfwd
+from core import shell, utils, banner, portfwd
+from core.listeners import tcp_listener, https_listener, http_handler
+from core.session_handlers import session_manager, sessions
 from core.background_module_runner import run_in_background, list_jobs
-from core.utils import portforwards, unregister_forward, list_forwards
+from core.utils import portforwards, unregister_forward, list_forwards, defender
+from core.gunnershell.gunnershell import Gunnershell
 
 from core.payload_generator import *
 from core.banner import print_banner
@@ -27,16 +31,35 @@ brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
+COLOR_RESET  = "\001\x1b[0m\002"
 
 # store last search results and the currently selected module
 search_results = []
 current_module = None
 
-PROMPT = brightblue + "GunnerC2 > "
+PROMPT = brightblue + "GunnerC2 > " + brightblue
 
 MODULE_DIR = os.path.join(os.path.dirname(__file__), "core/modules")  # ensure correct path
 
 COMMANDS = sorted(utils.commands.keys())
+
+HISTORY_FILE = os.path.expanduser("~/.gunnerc2_history")
+
+try:
+    readline.read_history_file(HISTORY_FILE)
+
+except FileNotFoundError:
+    pass
+
+def _save_main_history():
+    readline.write_history_file(HISTORY_FILE)
+    atexit.register(_save_main_history)
+
+
+class SilentParser(argparse.ArgumentParser):
+    def error(self, message):
+        # override to suppress default usage+error output
+        raise SystemExit(1)
 
 
 def get_all_modules():
@@ -159,7 +182,13 @@ def operator_loop():
                     parser.add_argument("-i", required=True)
                     parser.add_argument("-f", required=True)
                     parser.add_argument("-o", required=True)
-                    parsed_args = parser.parse_args(args[1:])
+                    
+                    try:
+                        parsed_args = parser.parse_args(parts[1:])
+
+                    except SystemExit:
+                        print(brightyellow + "Usage: download -i <session_id> -f <remote_file> -o <local_file>")
+                        continue
 
                 except Exception as e:
                     continue
@@ -187,7 +216,7 @@ def operator_loop():
                     print(f"Invalid session ID: {sid}")
                     continue"""
 
-                if session_manager.is_http_session(sid):
+                if session_manager.sessions[sid].transport in ("http", "https"):
                     check = upload_any(sid, local_file, remote_file)
                     if check is True:
                         shell.download_folder_http(sid, remote_file, local_file)
@@ -257,7 +286,7 @@ def operator_loop():
                     continue"""
 
 
-                if session_manager.is_http_session(sid):
+                if session_manager.sessions[sid].transport in ("http", "https"):
                     if os.path.isdir(local_file):
                         shell.upload_folder_http(sid, local_file, remote_file)
                     else:
@@ -274,6 +303,89 @@ def operator_loop():
             except:
                 continue
                 #print("Usage: upload -i <session_id> -l <local_file> -r <remote_file>")
+
+        elif user.startswith("gunnershell"):
+            parts = shlex.split(user)
+            if len(parts) != 2:
+                print(brightyellow + "Usage: gunnershell <session_id_or_alias>")
+                continue
+
+            sid = session_manager.resolve_sid(parts[1])
+            display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+            if not sid or sid not in session_manager.sessions:
+                print(brightred + f"No such session or alias: {parts[1]}")
+                continue
+
+            try:
+                print(brightgreen + f"[*] Starting GunnerShell on {display}...")
+                gs = Gunnershell(sid)
+                new = gs.interact()
+                if new:
+                    # we switched — go back to main prompt, then immediately
+                    # re-enter a fresh subshell on the new session
+                    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == new), new)
+                    print(brightgreen + f"[*] Now launching GunnerShell on {display}…")
+                    gs = Gunnershell(new)
+                    gs.interact()
+
+                else:
+                    pass
+            except ValueError as e:
+                print(brightred + str(e))
+            continue
+
+        elif user.startswith("shelldefence"):
+            parts = user.split()
+            try:
+                if len(parts) != 2 or parts[1] not in ("on", "off"):
+                    print(brightyellow + "Usage: shelldefence <on|off>")
+
+                if parts[1] == "on":
+                    defender.is_active = True
+
+                elif parts[1] == "off":
+                    defender.is_active = False
+
+            except IndexError:
+                pass
+
+            except Exception as e:
+                print(brightred + f"[!] An unknown error has ocurred: {e}")
+
+        elif user.strip() == "start":
+            # print the help/description for the "start" command
+            utils.print_help("start")
+            continue
+
+
+        elif user.startswith("start https"):
+            try:
+                parts = shlex.split(user)
+                parser = SilentParser(prog="start https", add_help=False)
+                parser.add_argument("start")
+                parser.add_argument("https")
+                parser.add_argument("ip")
+                parser.add_argument("port", type=int)
+                parser.add_argument("-c", dest="certfile", help="Path to TLS cert", required=False)
+                parser.add_argument("-k", dest="keyfile", help="Path to TLS key", required=False)
+            
+                try:
+                    parsed = parser.parse_args(parts)
+                except SystemExit:
+                    print("test")
+                    print(brightyellow + "Usage: start https <ip> <port> [-c <certfile> -k <keyfile>]")
+                    continue
+
+                threading.Thread(
+                    target=https_listener.start_https_listener,
+                    args=(parsed.ip, parsed.port, parsed.certfile, parsed.keyfile),
+                    daemon=True
+                ).start()
+
+            except Exception:
+                print(brightyellow + "Usage: start https <ip> <port> [-c <certfile> -k <keyfile>]")
+                pass
+
                 
 
         elif user.startswith("start http"):
@@ -286,11 +398,71 @@ def operator_loop():
 
         elif user.startswith("start tcp"):
             try:
-                _, _, ip, port = user.split()
-                port = int(port)
-                threading.Thread(target=tcp_listener.start_tcp_listener, args=(ip, port), daemon=True).start()
-            except:
-                print(brightyellow + "Usage: start tcp <ip> <port>")
+                parts = shlex.split(user)
+                parser = SilentParser(prog="start tcp", add_help=False)
+                parser.add_argument("start")
+                parser.add_argument("tcp")
+                parser.add_argument("ip")
+                parser.add_argument("--ssl", dest="ssl", action="store_true", help="Run listener with TLS/SSL", required=False)
+                parser.add_argument("port", type=int)
+                parser.add_argument("-c", dest="certfile", help="TLS certificate file", required=False)
+                parser.add_argument("-k", dest="keyfile", help="TLS key file", required=False)
+
+                try:
+                    parsed = parser.parse_args(parts)
+
+                except SystemExit:
+                    pass
+                    #print(brightyellow + "Usage: start tcp <ip> <port> [-c <certfile> -k <keyfile>]")
+
+                ip = parsed.ip
+                port = parsed.port
+                certfile = parsed.certfile
+                keyfile = parsed.keyfile
+                is_ssl = parsed.ssl
+
+                try:
+                    if is_ssl:
+                        is_ssl = True
+
+                    else:
+                        is_ssl = False
+
+                except Exception as e:
+                    print(brightred + f"[-] ERROR failed to access argument variables: {e}")
+
+                try:
+                    if certfile and keyfile and not is_ssl:
+                        try:
+                            while True:
+                                decide = input(brightyellow + f"[*] You inputted a cert and key file without the --ssl flag, would you like to use SSL/TLS? Y/n? ")
+
+                                if decide.lower() == "y" or decide.lower() == "yes":
+                                    is_ssl = True
+                                    break
+
+                                elif decide.lower() == "n" or decide.lower() == "no":
+                                    is_ssl = False
+                                    break
+
+                                else:
+                                    print(brightred + f"[-] ERROR please select a valid option!\n")
+
+                        except Exception as e:
+                            print(brightred + f"\n[-] ERROR failed to get answer from user in loop: {e}")
+
+                except Exception as e:
+                    print(brightred + f"\n[-] ERROR failed to parse arguments: {e}")
+
+                threading.Thread(
+                    target=tcp_listener.start_tcp_listener,
+                    args=(ip, port, certfile, keyfile, is_ssl),
+                    daemon=True
+                ).start()
+
+            except Exception:
+                print(brightyellow + "Usage: start tcp <ip> <port> [-c <certfile> -k <keyfile>]")
+                pass
 
         elif user == "listeners":
             utils.list_listeners()
@@ -303,7 +475,7 @@ def operator_loop():
                 _, sid = user.split()
                 real_sid = session_manager.resolve_sid(sid)
                 if real_sid:
-                    if session_manager.is_http_session(real_sid):
+                    if session_manager.sessions[real_sid].transport in ("http", "https"):
                         shell.interactive_http_shell(real_sid)
                     elif session_manager.is_tcp_session(real_sid):
                         shell.interactive_tcp_shell(real_sid)
@@ -346,26 +518,42 @@ def operator_loop():
                 continue
 
             # Extract payload type early
-            payload_index = parts.index("-p") + 1
-            payload_type = parts[payload_index]
+            try:
+                payload_index = parts.index("-p") + 1
+                payload_type = parts[payload_index]
+
+            except IndexError:
+                print(brightred + f"[!] You must specify a value for -p")
+                continue
 
             #### Profile-based parsing starts here ####
 
             if payload_type == "tcp-win":
-                parser = argparse.ArgumentParser(prog="generate (tcp-win)", add_help=False)
-                parser.add_argument("-f", "--format", choices=["ps1"], required=True)
-                parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], required=False)
-                parser.add_argument("-p", "--payload", choices=["tcp-win"], required=True)
-                parser.add_argument("-o", "--output", required=True)
-                parser.add_argument("-lh", "--local_host", required=True)
-                parser.add_argument("-lp", "--local_port", required=True)
+                    parser = SilentParser(prog="generate (tcp-win)", add_help=False)
+                    parser.add_argument("-f", "--format", choices=["ps1"], required=True)
+                    parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], required=False)
+                    parser.add_argument("--ssl", dest="ssl", action="store_true", help="Use SSL/TLS for the TCP reverse shell payload", required=False)
+                    parser.add_argument("-p", "--payload", choices=["tcp-win"], required=True)
+                    parser.add_argument("-o", "--output", required=False)
+                    parser.add_argument("-lh", "--local_host", required=True)
+                    parser.add_argument("-lp", "--local_port", required=True)
 
             elif payload_type == "http-win":
-                parser = argparse.ArgumentParser(prog="generate (http-win)", add_help=False)
+                parser = SilentParser(prog="generate (http-win)", add_help=False)
                 parser.add_argument("-f", "--format", choices=["ps1"], required=True)
                 parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], required=False)
                 parser.add_argument("-p", "--payload", choices=["http-win"], required=True)
-                parser.add_argument("-o", "--output", required=True)
+                parser.add_argument("-o", "--output", required=False)
+                parser.add_argument("-lh", "--local_host", required=True)
+                parser.add_argument("-lp", "--local_port", required=True)
+                parser.add_argument("--beacon_interval", required=True)
+
+            elif payload_type == "https-win":
+                parser = SilentParser(prog="generate (https-win)", add_help=False)
+                parser.add_argument("-f", "--format", choices=["ps1"], required=True)
+                parser.add_argument("-obs", "--obfuscation", type=int, choices=[1,2,3], required=False)
+                parser.add_argument("-p", "--payload", choices=["https-win"], required=True)
+                parser.add_argument("-o", "--output", required=False)
                 parser.add_argument("-lh", "--local_host", required=True)
                 parser.add_argument("-lp", "--local_port", required=True)
                 parser.add_argument("--beacon_interval", required=True)
@@ -381,18 +569,27 @@ def operator_loop():
                 print(brightyellow + utils.commands["generate"])
                 continue
 
+            if payload_type == "tcp-win":
+                if args.ssl:
+                    args.ssl = True
+
+
             # Call generators
             if args.payload == "tcp-win":
-                raw = generate_windows_powershell_tcp(args.local_host, args.local_port, args.obfuscation)
+                raw = generate_windows_powershell_tcp(args.local_host, args.local_port, args.obfuscation, args.ssl)
 
             elif args.payload == "http-win":
                 raw = generate_windows_powershell_http(args.local_host, args.local_port, args.beacon_interval, args.obfuscation)
 
-            with open(args.output, "w") as f:
-                f.write(raw)
+            elif args.payload == "https-win":
+                raw = generate_windows_powershell_https(args.local_host, args.local_port, args.beacon_interval, args.obfuscation)
 
-            print(brightgreen + f"[+] Payload written to {args.output}")
-            continue
+                if args.output:
+                    with open(args.output, "w") as f:
+                        f.write(raw)
+
+                    print(brightgreen + f"[+] Payload written to {args.output}")
+                    continue
 
         elif user.startswith("search"):
             parts = user.split()
@@ -555,6 +752,7 @@ help                 - Display this help menu
                     print(brightred + f"Unknown command: {subcmd}")
                     print(brightyellow + "Type 'help' to see available commands.")
 
+
         elif user.startswith("kill"):
             parts = shlex.split(user)
             if len(parts) == 3 and parts[1] == "-i":
@@ -565,7 +763,7 @@ help                 - Display this help menu
                 if not sid or sid not in session_manager.sessions:
                     print(brightred + f"[!] Invalid session or alias: {raw}")
                 else:
-                    if session_manager.is_http_session(sid):
+                    if session_manager.sessions[sid].transport in ("http", "https"):
                         if session_manager.kill_http_session(sid):
                             print(brightyellow + f"[*] Killed HTTP session {display}")
                         else:

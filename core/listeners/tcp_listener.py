@@ -21,6 +21,9 @@ brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 
 PROMPT = brightblue + "GunnerC2 > " + brightblue
 
+global prompt_print
+prompt_print = 1
+
 
 def generate_tls_context(listen_ip):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -209,8 +212,17 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
 
         sid = utils.gen_session_id()
         session_manager.register_tcp_session(sid, client_socket, is_ssl)
+        session = session_manager.sessions[sid]
+        transport = session.transport.upper()
 
-        utils.async_note(brightgreen + f"[+] New TCP agent: {sid}", PROMPT)
+        if prompt_print == 1:
+            utils.async_note(brightgreen + f"[+] New {transport} agent: {sid}", PROMPT)
+
+        elif prompt_print == 0:
+            print(brightgreen + f"[+] New {transport} agent: {sid}")
+
+        else:
+            print(brightred + f"[!] An unknown error has ocurred!")
 
         # DRAIN BANNER (important!)
         client_socket.settimeout(0.5)

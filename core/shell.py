@@ -66,12 +66,13 @@ def run_command_http(sid, cmd):
     except Exception as e:
         print(brightred + f"[-] ERROR failed to decode command output: {e}")
 
-def run_command_tcp(sid, cmd):
+def run_command_tcp(sid, cmd, timeout=0.5):
     session = session_manager.sessions[sid]
     meta = session.metadata
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     client_socket = session.handler
     os_type = meta.get("os", "").lower()
+    
 
     defender_state = defender.is_active
 
@@ -89,7 +90,7 @@ def run_command_tcp(sid, cmd):
         except Exception as e:
             print(brightred + f"[-] ERROR failed to send command over socket: {e}")
             
-        client_socket.settimeout(0.5)
+        client_socket.settimeout(timeout)
         response = b''
 
         while True:
@@ -735,7 +736,7 @@ def download_folder_tcp(sid, remote_dir, local_dir):
         try:
             while True:
                 global_tcpoutput_blocker = 0
-                out = run_command_tcp(sid, check_ps)
+                out = run_command_tcp(sid, check_ps, timeout=0.5)
                 try:
                     if "EXISTS" in out or "exists" in out:
                         break
@@ -1464,9 +1465,9 @@ def get_display(sid):
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     return display
 
-def run_quiet_tcpcmd(sid, cmd):
+def run_quiet_tcpcmd(sid, cmd, timeout):
     global_tcpoutput_blocker = 1
-    run_command_tcp(sid, cmd)
+    run_command_tcp(sid, cmd, timeout)
     global_tcpoutput_blocker = 0
 
 

@@ -511,7 +511,11 @@ def operator_loop():
 
         elif user.startswith("generate"):
             # Split input
-            parts = shlex.split(user)
+            try:
+                parts = shlex.split(user)
+
+            except Exception as e:
+                print(brightred + f"[!] We hit an error while parsing your command: {e}")
 
             if "-p" not in parts:
                 print(brightyellow + "You must specify payload type first with -p")

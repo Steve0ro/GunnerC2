@@ -446,6 +446,87 @@ Example:
     "cat":  "cat <filepath>\n    Read and display the contents of the given file.",
     "cd":   "cd <path>\n    Change the remote working directory to <path>.",
     "pwd":  "pwd\n    Print the current remote working directory.",
+    "cp":   "cp <src> <dst>   Copy file on the remote host.",
+    "mv":        "Move or rename a file/directory",
+    "rmdir":     "Remove a directory (recursive)",
+    "checksum":  "Compute SHA256 of a file",
+    "del":  "del <file>   Delete a file on the remote host.",
+    "rm":   "Alias for del",
+    "mkdir":"mkdir <path>   Create a directory on the remote host.",
+    "md":   "Alias for mkdir",
+    "touch":"touch <path>   Create or update a file on the remote host",
+    "drives":   "List mounted drives/filesystems",
+    "edit": "edit <path>\n    Download, verify text, open in $EDITOR, then re-upload.",
+    # ────────────────────────────────────────────────────────────────────────────────
+    # Networking Commands
+    # ────────────────────────────────────────────────────────────────────────────────
+    "netstat":   "netstat\n    Show active TCP/UDP connections on the remote host.",
+    "ifconfig":  "ifconfig / ipconfig\n    Display network interfaces.",
+    "arp":       "arp\n    Display the ARP cache.",
+    "resolve":   "resolve <host>\n    Resolve a hostname on the remote system.",
+    "nslookup":  "Alias for resolve",
+    "route":     "route\n    View the remote host’s routing table.",
+    "getproxy":  "getproxy\n    Display the remote Windows proxy settings.",
+    "ipconfig":  "ipconfig    Display network interfaces (Windows: ipconfig /all; Linux/macOS: ifconfig -a)",
+    "ifconfig":  "Alias for ipconfig",
+    # ────────────────────────────────────────────────────────────────────────────────
+    # System Commands
+    # ────────────────────────────────────────────────────────────────────────────────
+    "sysinfo":   "sysinfo\n    Display system information (OS, hostname, arch).",
+    "ps":        "ps\n    List running processes on the remote host.",
+    "getuid":    "getuid\n    Show the user the server is running as.",
+    "getprivs":  "getprivs\n    Show/enumerate process privileges.",
+    "getpid":    "getpid\n    Print the process ID of the remote agent.",
+    "steal_token": """
+Usage:
+  steal_token <PID> -f <format> -p <tcp-win|http-win|https-win>
+               -lh <local_host> -lp <local_port> -x <http_port>
+               [--serve_https] [--ssl] [-obs <1|2|3>]
+               [--beacon_interval <sec>]
+
+Description:
+  Steal a Windows token via CreateProcessWithTokenW and immediately spawn
+  a stage-1 PowerShell payload on the target.
+
+Options:
+  -f, --format <format>            Payload format (only “ps1” supported)
+  -p, --payload <tcp-win|http-win|https-win>
+                                   Which stager to use
+  -lh, --local_host <ip>           IP for the stager to call back to
+  -lp, --local_port <port>         Port for the stager callback
+  -x,  --http_port <port>          Port for the temporary HTTP(S) server
+      --serve_https                Serve the stage-1 script over HTTPS
+                                   (self-signed cert)
+      --ssl                        Force SSL on the reverse shell channel
+  -obs <1|2|3>                     Obfuscation strength (1=low, 3=high)
+      --beacon_interval <sec>      Beacon interval (required for http-win/https-win)
+""",
+    "getenv":    "getenv <VAR1> [<VAR2> ...]\n    Retrieve one or more environment variables from the remote host.",
+    "exec":      "exec <command> [args...]\n    Execute an arbitrary OS command.",
+    "kill":      "kill <pid>\n    Terminate the given process ID.",
+    "getsid":    "getsid\n    Show the Windows user SID of the current token.",
+    "clearev": """
+clearev [-f|--force]
+    Clear all Windows event logs. Requires local Administrator or SeSecurityPrivilege;
+    use -f/--force to override privilege check.
+""",
+    "localtime": "Display the remote system’s date and time.",
+    "reboot":    "Reboot the remote host immediately.",
+    "pgrep":     "pgrep <pattern>   Filter processes by name/pattern",
+    "pkill":     "pkill <pattern>   Terminate processes by name/pattern",
+    "suspend":  "suspend <pid>\n    Suspend the given process ID.",
+    "resume":   "resume <pid>\n    Resume the given suspended process.",
+    "shutdown":"shutdown [-r|-h]\n    Shutdown (`-h`) or reboot (`-r`) the host.",
+    "reg": {
+    "_desc": "reg <query|get|set|delete> …\n    Interact with the Windows registry.",
+    "query":  "reg query <hive>\\\\<path> [/s]\n    List subkeys and values (use /s to recurse).",
+    "get":    "reg get <hive>\\\\<path> <ValueName>\n    Read a single value.",
+    "set":    "reg set <hive>\\\\<path> <Name> <Data>\n    Create or update a string value.",
+    "delete": "reg delete <hive>\\\\<path> [/f]\n    Delete a value or entire key (use /f to force).",
+    },
+    "services":   "services <list|start|stop|restart> [name]   Manage services",
+    "netusers":   "netusers    List local user accounts",
+    "netgroups":  "netgroups   List local group accounts",
  }
 
 def print_gunnershell_help(cmd: str=None):
@@ -456,20 +537,66 @@ def print_gunnershell_help(cmd: str=None):
             "help":     "Help menu",
             "exit":     "Exit the subshell and return to main prompt",
             "list":     "List all available modules",
-            "upload":   "Upload a file to the session",
-            "download": "Download a file or directory",
-            "switch":  "Switch to another session's GunnerShell",
+            "switch":   "Switch to another session's GunnerShell",
             "shell":    "Drop into a full interactive shell",
             "modhelp":  "Show module options for a module",
             "run":      "Execute module with inline options",
             "search":   "Filter available modules by keyword or show all",
-            "portfwd":  "Manage port-forwards on this session",
         }
         fs_cmds = {
             "ls":       "List files on the remote host",
             "cat":      "Print contents of a file",
             "cd":       "Change remote working directory",
-            "pwd":      "Print remote working directory"
+            "pwd":      "Print remote working directory",
+            "cp":       "Copy file from source → destination",
+            "mv":       "Move or rename a file/directory",
+            "rmdir":    "Remove a directory (recursive)",
+            "checksum": "Compute SHA256 of a file",
+            "upload":   "Upload a file to the session",
+            "download": "Download a file or directory",
+            "del":      "Delete a file on the remote host",
+            "rm":       "Alias for del",
+            "mkdir":    "Create a directory on the remote host",
+            "md":       "Alias for mkdir",
+            "touch":    "Create or update a file on the remote host",
+            "drives":   "List mounted drives/filesystems",
+            "edit":     "Edit a remote text file in your local editor",
+        }
+        net_cmds = {
+            "netstat":   "Show sockets and listening ports",
+            "ifconfig":  "List network interfaces",
+            "portfwd":   "Manage port-forwards on this session",
+            "arp":       "Display ARP table",
+            "resolve":   "Resolve hostname(s)",
+            "nslookup":  "Alias for resolve",
+            "route":     "Show routing table",
+            "getproxy":  "Show Windows proxy config",
+            "ipconfig":  "Display network interfaces (alias: ifconfig)",
+            "ifconfig":  "Alias for ipconfig",
+        }
+        sys_cmds = {
+            "sysinfo":   "Display remote system information",
+            "ps":        "List running processes",
+            "getuid":    "Show the current user",
+            "getprivs":  "Enumerate process privileges",
+            "getpid":    "Print the remote agent’s process ID",
+            "getenv":    "Retrieve one or more environment variables",
+            "exec":      "Execute an arbitrary OS command",
+            "kill":      "Terminate a process by PID",
+            "getsid":    "Show Windows SID of current token",
+            "clearev":   "Clear all Windows event logs",
+            "localtime": "Display target local date/time",
+            "reboot":    "Reboot the remote host",
+            "pgrep":     "Filter processes by name/pattern",
+            "pkill":     "Terminate processes by name/pattern",
+            "suspend":   "Suspend a process by PID",
+            "resume":    "Resume a suspended process",
+            "shutdown":  "Shut down or reboot the remote host",
+            "reg":       "Windows registry operations (query/get/set/delete)",
+            "services":  "Manage services",
+            "netusers":  "List local user accounts",
+            "netgroups": "List local group accounts",
+            "steal_token":"Steal Windows token and inject stage-1 PowerShell payload",
         }
 
         # print Core
@@ -480,6 +607,15 @@ def print_gunnershell_help(cmd: str=None):
         # print File system
         print(brightyellow + "File system Commands\n=====================\n")
         for name, desc in fs_cmds.items():
+            print(brightgreen + f"{name:<25} {desc}")
+        print()
+        # print networking commands
+        print(brightyellow + "\nNetwork Commands\n================\n")
+        for name, desc in net_cmds.items():
+            print(brightgreen + f"{name:<25} {desc}")
+        print()
+        print(brightyellow + "System Commands\n===============\n")
+        for name, desc in sys_cmds.items():
             print(brightgreen + f"{name:<25} {desc}")
         print(brightyellow + "\nFor detailed help run: help <command> [subcommand]\n")
         return

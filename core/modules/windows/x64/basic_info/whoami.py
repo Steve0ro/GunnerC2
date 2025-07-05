@@ -44,7 +44,7 @@ class WhoamiModule(ModuleBase):
                 output = shell.run_command_http(sid, "whoami")
 
             elif session_manager.is_tcp_session(sid):
-                output = shell.run_command_tcp(sid, "whoami")
+                output = shell.run_command_tcp(sid, "whoami", timeout=0.5)
 
             else:
                 print(brightred + "[!] Unknown session type")

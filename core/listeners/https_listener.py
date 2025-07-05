@@ -1,5 +1,3 @@
-# core/https_listener.py
-
 import ssl
 from http.server import HTTPServer
 from core.listeners.http_handler import C2HTTPRequestHandler, generate_http_session_id

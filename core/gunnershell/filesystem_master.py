@@ -4,6 +4,7 @@ import os
 import shlex
 import argparse
 import subprocess
+import shutil
 
 from core import shell, utils
 from core.session_handlers import session_manager, sessions
@@ -16,16 +17,6 @@ brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 COLOR_RESET  = "\001\x1b[0m\002"
-
-def _run_remote(sid: str, cmd: str) -> str:
-    """
-    Helper that picks HTTP vs TCP automatically.
-    """
-    sess = session_manager.sessions[sid]
-    if sess.transport in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or ""
-    else:
-        return shell.run_command_tcp(sid, cmd) or ""
 
 
 def ls(sid, os_type, path):
@@ -58,7 +49,7 @@ def ls(sid, os_type, path):
         return out
 
     elif sess.transport.lower() in ("tcp", "tls"):
-        out =  shell.run_command_tcp(sid, cmd)
+        out =  shell.run_command_tcp(sid, cmd, timeout=0.5)
         return out
 
     else:
@@ -104,7 +95,7 @@ def pwd(sid, os_type):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -153,7 +144,7 @@ def cd(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -205,34 +196,384 @@ def cat(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd)
-        
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
         return None
 
     return out or None
 
-def rm(sid: str, path: str) -> str:
-    return _run_remote(sid, f"rm -f {path}")
+def cp(sid, os_type, src, dst):
+    """
+    Copy a file on the remote host.
+      * Windows: uses PowerShell Copy-Item
+      * Linux:   uses cp -f
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 
-def mkdir(sid: str, path: str) -> str:
-    return _run_remote(sid, f"mkdir -p {path}")
+    if "windows" in os_type:
+        # -Force to overwrite
+        cmd = f"Copy-Item -Path \"{src}\" -Destination \"{dst}\" -Force"
 
-def mv(sid: str, src: str, dst: str) -> str:
-    return _run_remote(sid, f"mv {src} {dst}")
+    elif "linux" in os_type:
+        cmd = f"cp -f \"{src}\" \"{dst}\""
 
-def cp(sid: str, src: str, dst: str) -> str:
-    return _run_remote(sid, f"cp {src} {dst}")
+    else:
+        print(brightred + f"[!] Unsupported OS on {display}")
+        return ""
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        print(brightred + f"[!] No such session: {display}")
+        return ""
+
+    if sess.transport.lower() in ("http","https"):
+        out = shell.run_command_http(sid, cmd)
+
+    elif sess.transport.lower() in ("tls", "tcp"):
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
+    else:
+        print(brightred + f"[!] Unsupported shell type: {transport}")
+        return None
+
+    return out or None
+
+def delete(sid, os_type, path):
+    """
+    Delete a file on the remote host.
+
+    - sid:      the real session ID
+    - os_type:  session.metadata.get("os") lower‐cased ("windows" vs. "linux")
+    - path:     file to delete
+
+    Returns the raw output from the remote command, or None on error.
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    if "windows" in os_type:
+        # PowerShell: remove the item
+        cmd = f'Remove-Item -LiteralPath "{path}" -Force'
+
+    elif "linux" in os_type:
+        cmd = f'rm -f "{path}"'
+
+    else:
+        print(brightred + f"[!] Unsupported operating system on {display}")
+        return None
+
+    sess = session_manager.sessions.get(sid)
+
+    if not sess:
+        print(brightred + f"[!] No such session: {display}")
+        return None
+
+    transport = sess.transport.lower()
+    if transport in ("http", "https"):
+        out = shell.run_command_http(sid, cmd)
+
+    else:
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
+    return out or None
+
+def mkdir(sid, os_type, path):
+    """
+    Create a directory on the remote host.
+
+    - sid:      the real session ID
+    - os_type:  session.metadata.get("os") lower-cased
+    - path:     directory to create
+
+    Returns raw output or None on error.
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    if "windows" in os_type:
+        # PowerShell: make folder
+        cmd = f'New-Item -ItemType Directory -Force -Path "{path}"'
+
+    elif "linux" in os_type:
+        cmd = f'mkdir -p "{path}"'
+
+    else:
+        print(brightred + f"[!] Unsupported OS on {display}")
+        return None
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        print(brightred + f"[!] No such session: {display}")
+        return None
+
+    if sess.transport.lower() in ("http", "https"):
+        out = shell.run_command_http(sid, cmd)
+
+    else:
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
+    return out or None
+
+def touch(sid, os_type, path):
+    """
+    Create an empty file on the remote host (or update timestamp).
+
+    - sid:      the real session ID
+    - os_type:  session.metadata.get("os") lower-cased
+    - path:     file path to touch
+
+    Returns raw output or None on error.
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    if "windows" in os_type:
+        cmd = f'if (Test-Path "{path}") {{ (Get-Item "{path}").LastWriteTime = Get-Date }} else {{ New-Item -ItemType File -Force -Path "{path}" }}'
+
+    elif "linux" in os_type:
+        cmd = f'touch "{path}"'
+
+    else:
+        print(brightred + f"[!] Unsupported OS on {display}")
+        return None
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        print(brightred + f"[!] No such session: {display}")
+        return None
+
+    if sess.transport.lower() in ("http", "https"):
+        out = shell.run_command_http(sid, cmd)
+
+    else:
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
+    return out or None
+
+def mv(sid, os_type, src, dst):
+    """
+    Move or rename a file/directory on the remote host.
+    - Windows: uses PowerShell Move-Item
+    - Linux:   uses mv -f
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    if "windows" in os_type:
+        cmd = f"Move-Item -LiteralPath \"{src}\" -Destination \"{dst}\" -Force"
+
+    elif "linux" in os_type:
+        cmd = f"mv -f \"{src}\" \"{dst}\""
+
+    else:
+        print(brightred + f"[!] Unsupported OS on {display}")
+        return None
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        print(brightred + f"[!] No such session: {display}")
+        return None
+
+    transport = sess.transport.lower()
+    if transport in ("http", "https"):
+        out = shell.run_command_http(sid, cmd)
+
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
+    else:
+        print(brightred + f"[!] Unsupported shell type: {transport}")
+        return None
+
+    return out or None
+
+
+def rmdir(sid, os_type, path):
+    """
+    Remove a directory on the remote host.
+    - Windows: PowerShell Remove-Item -Recurse -Force
+    - Linux:   rm -rf
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    if "windows" in os_type:
+        cmd = f"Remove-Item -LiteralPath \"{path}\" -Recurse -Force"
+
+    elif "linux" in os_type:
+        cmd = f"rm -rf \"{path}\""
+
+    else:
+        print(brightred + f"[!] Unsupported OS on {display}")
+        return None
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        print(brightred + f"[!] No such session: {display}")
+        return None
+
+    transport = sess.transport.lower()
+    if transport in ("http", "https"):
+        out = shell.run_command_http(sid, cmd)
+
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
+    else:
+        print(brightred + f"[!] Unsupported shell type: {transport}")
+        return None
+
+    return out or None
+
+
+def checksum(sid, os_type, path):
+    """
+    Compute a SHA256 checksum of a file on the remote host.
+    - Windows: Get-FileHash -Algorithm SHA256
+    - Linux:   sha256sum
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    if "windows" in os_type:
+        cmd = f"(Get-FileHash -Algorithm SHA256 -Path \"{path}\").Hash"
+
+    elif "linux" in os_type:
+        cmd = f"sha256sum \"{path}\""
+
+    else:
+        print(brightred + f"[!] Unsupported OS on {display}")
+        return None
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        print(brightred + f"[!] No such session: {display}")
+        return None
+
+    transport = sess.transport.lower()
+    if transport in ("http", "https"):
+        out = shell.run_command_http(sid, cmd)
+
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
+    else:
+        print(brightred + f"[!] Unsupported shell type: {transport}")
+        return None
+
+    return out or None
+
+
+def drives(sid, os_type):
+    """
+    List mounted drives / filesystems on the remote host.
+
+    - sid:      the real session ID
+    - os_type:  session.metadata.get("os") lower‐cased ("windows" vs. "linux")
+
+    Returns the raw output from the remote command, or None on error.
+    """
+    # resolve display name for errors
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    if "windows" in os_type:
+        # PowerShell: only filesystem drives
+        cmd = "Get-PSDrive -PSProvider FileSystem | Format-Table Name, Root -AutoSize"
+
+    elif "linux" in os_type:
+        # show all mounted filesystems
+        cmd = "df -hT"
+
+    else:
+        print(brightred + f"[!] Unsupported operating system on {display}")
+        return None
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        print(brightred + f"[!] No such session: {display}")
+        return None
+
+    if sess.transport.lower() in ("http", "https"):
+        out = shell.run_command_http(sid, cmd)
+
+    else:
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+
+    return out or None
+
+def edit(sid, os_type, remote_path):
+    """
+    Download a remote file, verify it’s text, open it in $EDITOR (or nano), then re-upload it.
+    Returns a status message.
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        return f"[!] No such session: {display}"
+
+    # choose download/upload functions
+    is_http = sess.transport.lower() in ("http", "https")
+    dl = shell.download_file_http if is_http else shell.download_file_tcp
+    ul = shell.upload_file_http   if is_http else shell.upload_file_tcp
+
+    # create a temp file
+    fname = os.path.basename(remote_path)
+    fd, local_tmp = tempfile.mkstemp(prefix="gunner-edit-", suffix="-"+fname)
+    os.close(fd)
+
+    # download the remote file
+    try:
+        dl(sid, remote_path, local_tmp)
+
+    except Exception as e:
+        os.remove(local_tmp)
+        return f"[!] Failed to download {remote_path}: {e}"
+
+    # quick "is-text" sniff: look for any NUL byte in the first 8KiB
+    try:
+        with open(local_tmp, "rb") as f:
+            sample = f.read(8192)
+
+        if b"\x00" in sample:
+            os.remove(local_tmp)
+            return "[!] File appears to be binary, edit aborted"
+
+    except Exception as e:
+        os.remove(local_tmp)
+        return f"[!] Couldn’t read temp file: {e}"
+
+    # launch your editor
+    # pick a local editor by probing common names
+    editors = ["nano", "vim", "vi", "code", "notepad"]  # adjust to taste
+    for ed in editors:
+        if shutil.which(ed):
+            editor = ed
+            break
+    else:
+        os.remove(local_tmp)
+        return "[!] No editor found (tried: {})".format(", ".join(editors))
+
+    # launch the chosen editor
+    try:
+        subprocess.call([editor, local_tmp])
+
+    except Exception as e:
+        os.remove(local_tmp)
+        return f"[!] Failed to launch editor ({editor}): {e}"
+
+    # re-upload
+    try:
+        ul(sid, local_tmp, remote_path)
+        
+    except Exception as e:
+        os.remove(local_tmp)
+        return f"[!] Failed to re-upload {remote_path}: {e}"
+
+    # cleanup & done
+    os.remove(local_tmp)
+    return f"Edited and re-uploaded {remote_path}"
+
+
 
 def search(sid: str, pattern: str) -> str:
     return _run_remote(sid, f"find . -iname '*{pattern}*'")
 
-def checksum(sid: str, path: str) -> str:
-    return _run_remote(sid, f"sha256sum {path}")
-
-def show_mount(sid: str) -> str:
-    return _run_remote(sid, "mount")
 
 #
 # — Local operations (aliases for l* commands) —

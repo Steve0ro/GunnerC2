@@ -1,5 +1,6 @@
 import shlex
 import readline
+import ntpath
 import os, sys, subprocess
 from core.module_loader import load_module, discover_module_files, search_modules, MODULE_DIR as BASE_MODULE_DIR
 from core.session_handlers.session_manager import resolve_sid
@@ -7,8 +8,11 @@ from core.utils import print_help, print_gunnershell_help, gunnershell_commands
 from core import shell, portfwd, utils
 from core.session_handlers import session_manager
 from core.gunnershell.filesystem_master import *
+from core.gunnershell import filesystem_master as filesystem
+from core.gunnershell import network_master as net
+from core.gunnershell import system_master as system
 from colorama import init, Fore, Style
-import ntpath
+
 
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
@@ -40,9 +44,9 @@ class Gunnershell:
         self.prompt = f"{UNDERLINE_ON}{brightblue}GunnerShell{UNDERLINE_OFF} > "
         # discover available modules once
         self.available = discover_module_files(MODULE_DIR)
-        os_type = self.session.metadata.get("os","").lower()
-        self.cwd = pwd(self.sid, os_type) or ""
-        """find_dir = pwd(self.sid, os_type)
+        self.os_type = self.session.metadata.get("os","").lower()
+        self.cwd = pwd(self.sid, self.os_type) or ""
+        """find_dir = pwd(self.sid, self.os_type)
         if "\\" in find_dir:
             self.cwd = find_dir.replace("\\", "\\\\")
 
@@ -51,6 +55,23 @@ class Gunnershell:
 
         else:
             print(brightred + f"[!] An unknown error has ocurred!")"""
+
+
+    def make_abs(self, p):
+        """
+        Resolve p (which may be relative) against the current working
+        directory (self.cwd), using the right path logic for windows/linux.
+        """
+        
+
+        # if it's already absolute, just return it
+        if ("windows" in self.os_type and ntpath.isabs(p)) or \
+           ("linux"   in self.os_type and p.startswith("/")):
+            return p
+
+        base = self.cwd or ""
+        joiner = ntpath if "windows" in self.os_type else self.os.path
+        return joiner.normpath(joiner.join(base, p))
 
 
     def completer(self, text, state):
@@ -354,8 +375,8 @@ class Gunnershell:
                         # fall back if they had an unescaped trailing backslash
                         parts = user.split(maxsplit=1)
 
-                    os_type = self.session.metadata.get("os", "").lower()
- 
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
                     
                     # 1) exactly "ls" → default to current dir
                     if len(parts) == 1:
@@ -365,13 +386,13 @@ class Gunnershell:
                     elif len(parts) == 2:
                         raw = parts[1]
                         # on Linux: absolute if starts with "/"
-                        if "linux" in os_type and raw.startswith("/"):
+                        if "linux" in self.os_type and raw.startswith("/"):
                             target = raw
                         # on Windows: absolute if drive letter like "C:\"
-                        elif "windows" in os_type and ntpath.isabs(raw):
+                        elif "windows" in self.os_type and ntpath.isabs(raw):
                             target = raw
                         else:
-                            if "windows" in os_type:
+                            if "windows" in self.os_type:
                                 # use ntpath so “..” works against a C:\ drive path
                                 combined = ntpath.join(self.cwd, raw)
                                 target   = ntpath.normpath(combined)
@@ -384,7 +405,7 @@ class Gunnershell:
                         print(brightyellow + "Usage: ls [<path>]")
                         continue
 
-                    out = ls(self.sid, os_type, target)
+                    out = ls(self.sid, self.os_type, target)
                     if out:
                         print(brightgreen + f"\n{out}")
 
@@ -393,8 +414,7 @@ class Gunnershell:
                     continue
 
                 elif user == "pwd":
-                    os_type = self.session.metadata.get("os", "").lower()
-                    cwd = pwd(self.sid, os_type)
+                    cwd = pwd(self.sid, self.os_type)
                     if cwd:
                         print(cwd)
 
@@ -405,19 +425,20 @@ class Gunnershell:
                 elif user.startswith("cd"):
                     try:
                         parts = shlex.split(user, 1)
+                        target = parts[1]
 
                     except ValueError:
                         # fall back if they had an unescaped trailing backslash
                         parts = user.split(maxsplit=1)
 
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
                     if len(parts) < 2 or len(parts) > 2:
                         print(brightyellow + "Usage: cd <path>")
                         continue
 
-
-                    target = parts[1]
-                    os_type = self.session.metadata.get("os", "").lower()
-                    new_cwd = cd(self.sid, os_type, target)
+                    new_cwd = cd(self.sid, self.os_type, target)
 
                     if new_cwd:
                         self.cwd = new_cwd     # store for later prefixes
@@ -431,29 +452,30 @@ class Gunnershell:
                     parts = None
                     try:
                         parts = shlex.split(user, 1)
-                        
+                        raw = parts[1]
+
                     except ValueError:
                         # fallback if they had an unescaped trailing backslash
                         parts = user.split(maxsplit=1)
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
 
                     # require exactly one argument
                     if len(parts) != 2:
                         print(brightyellow + "Usage: cat <filepath>")
                         continue
 
-                    raw = parts[1]
-                    os_type = self.session.metadata.get("os", "").lower()
-
                     # decide absolute vs relative
-                    if "linux" in os_type and raw.startswith("/"):
+                    if "linux" in self.os_type and raw.startswith("/"):
                         target = raw
 
-                    elif "windows" in os_type and ntpath.isabs(raw):
+                    elif "windows" in self.os_type and ntpath.isabs(raw):
                         target = raw
 
                     else:
                         # relative → resolve against self.cwd
-                        if "windows" in os_type:
+                        if "windows" in self.os_type:
                             joined = ntpath.join(self.cwd, raw)
                             target = ntpath.normpath(joined)
 
@@ -462,7 +484,7 @@ class Gunnershell:
                             target = os.path.normpath(joined)
 
                     # finally invoke remote cat
-                    out = cat(self.sid, os_type, target)
+                    out = cat(self.sid, self.os_type, target)
                     if out:
                         print(brightgreen + out)
 
@@ -470,9 +492,554 @@ class Gunnershell:
                         print(brightyellow + "[*] No output or file not found")
                     continue
 
+                elif user.startswith("cp"):
+                    try:
+                        parts = shlex.split(user, 2)
+                        raw_src, raw_dst = parts[1], parts[2]
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    if len(parts) != 3:
+                        print(brightyellow + "Usage: cp <source> <destination>")
+                        continue
+
+                    # both paths may be relative → join to cwd
+
+                    if raw_src and raw_dst:
+                        src = self.make_abs(raw_src)
+                        dst = self.make_abs(raw_dst)
+
+                    out = filesystem.cp(self.sid, self.os_type, src, dst)
+
+                    if out:
+                        print(brightgreen + out)
+
+                    else:
+                        print(brightyellow + "[*] Copy completed!")
+                    continue
+
+                elif user.startswith("del ") or user.startswith("rm "):
+                    try:
+                        parts = shlex.split(user, 1)
+                        raw = parts[1]
+                        verb = parts[0]
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: del <path>  or  rm <path>")
+                        continue
+
+                    # if not absolute, join to cwd
+                    
+                    if raw:
+                        raw = self.make_abs(raw)
+
+                    out = delete(self.sid, self.os_type, raw)
+                    if out:
+                        print(brightgreen + out)
+
+                    else:
+                        print(brightyellow + f"[*] {verb} completed")
+                    continue
+
+                elif user.startswith("mkdir") or user.startswith("md"):
+                    try:
+                        parts = shlex.split(user, 1)
+                        raw = parts[1]
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: mkdir <path>  or  md <path>")
+                        continue
+
+                    # resolve relative to cwd
+
+                    if raw:
+                        raw_path = self.make_abs(raw)
+
+                    else:
+                        print(brightred + f"[!] An unknown error ocurred!")
+
+                    out = mkdir(self.sid, self.os_type, raw_path)
+                    if out:
+                        print(brightgreen + out)
+
+                    else:
+                        print(brightgreen + f"Created directory: {raw}")
+                    continue
+
+                # touch
+                elif user.startswith("touch"):
+                    try:
+                        parts = shlex.split(user, 1)
+                        raw = parts[1]
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: touch <path>")
+                        continue
+
+                    raw = self.make_abs(raw)
+
+                    out = touch(self.sid, self.os_type, raw)
+
+                    if out:
+                        print(brightgreen + out)
+
+                    else:
+                        print(brightgreen + f"Created file: {raw} on compromised host {self.display}")
+                    continue
+
+                # — checksum —
+                elif user.startswith("checksum"):
+                    try:
+                        parts = shlex.split(user, 1)
+                        raw = parts[1]
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: checksum <path>")
+                        continue
+
+                    # make raw absolute against cwd if it isn’t already
+                    raw = self.make_abs(raw)
+
+                    out = filesystem.checksum(self.sid, self.os_type, raw)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+
+                elif user.startswith("mv"):
+                    try:
+                        parts = shlex.split(user)
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    if len(parts) != 3:
+                        print(brightyellow + "Usage: mv <src> <dst>")
+                        continue
+
+                    raw_src, raw_dst = parts[1], parts[2]
+                    norm = ntpath if "windows" in self.os_type else os.path
+
+                    # resolve src
+                    """if (("windows" in self.os_type and not ntpath.isabs(raw_src)) or
+                    ("linux"   in self.os_type and not raw_src.startswith("/"))):
+                        raw_src = norm.normpath(norm.join(self.cwd, raw_src))
+                    # resolve dst
+                    if (("windows" in self.os_type and not ntpath.isabs(raw_dst)) or
+                    ("linux"   in self.os_type and not raw_dst.startswith("/"))):
+                        raw_dst = norm.normpath(norm.join(self.cwd, raw_dst))"""
+
+                    raw_src = self.make_abs(raw_src)
+                    raw_dst = self.make_abs(raw_dst)
+
+                    out = filesystem.mv(self.sid, self.os_type, raw_src, raw_dst)
+                    if out:
+                        print(brightgreen + out)
+                        continue
+
+
+                # — rmdir (remove directory) —
+                elif user.startswith("rmdir"):
+                    try:
+                        parts = shlex.split(user, 1)
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: rmdir <path>")
+                        continue
+
+                    raw = parts[1]
+                
+                    raw = self.make_abs(raw)
+
+                    out = filesystem.rmdir(self.sid, self.os_type, raw)
+                    if out:
+                        print(brightgreen + out)
+                        continue
+
+                elif user == "drives":
+                    out = filesystem.drives(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + f"\n{out}")
+                        
+                    else:
+                        print(brightyellow + "[*] No output or error")
+                    continue
+
+                elif user.startswith("edit"):
+                    try:
+                        parts = shlex.split(user, 1)
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: edit <path>")
+                        continue
+
+                    raw = parts[1]
+
+                    # resolve relative → absolute against cwd
+                    raw = self.make_abs(raw)
+
+                    result = filesystem.edit(self.sid, self.os_type, raw)
+                    print(brightgreen + result)
+                    continue
+
+
+                #################################################################################################
+                ##################################Networking Commands############################################
+                #################################################################################################
+                #################################################################################################
+
+                elif user == "netstat":
+                    out = net.netstat(self.sid, self.os_type)
+                    print(brightgreen + f"\n{out}")
+                    continue
+
+                elif user.startswith("ipconfig") or user.startswith("ifconfig"):
+                    try:
+                        parts = shlex.split(user)
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    if len(parts) != 1:
+                        print(brightyellow + "Usage: ipconfig")
+                        continue
+
+                    out = net.ipconfig(self.sid, self.os_type)
+
+                    if out:
+                        print(brightgreen + out)
+                    else:
+                        print(brightyellow + "[*] No output")
+                    continue
+
+                elif user == "arp":
+                    out = net.arp(self.sid, self.os_type)
+                    print(brightgreen + f"\n{out}")
+                    continue
+
+                elif user.startswith("resolve ") or user.startswith("nslookup "):
+                    try:
+                        parts = shlex.split(user, 1)
+                        host = parts[1]
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    out = net.resolve(self.sid, self.os_type, host)
+                    print(brightgreen + f"\n{out}")
+                    continue
+
+                elif user == "route":
+                    out = net.route(self.sid, self.os_type)
+                    print(brightgreen + f"\n{out}")
+                    continue
+
+                elif user.startswith("getproxy"):
+                    try:
+                        parts = shlex.split(user)
+
+                    except Exception as e:
+                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
+
+                    if len(parts) != 1:
+                        print(brightyellow + "Usage: getproxy")
+                        continue
+
+                    out = net.getproxy(self.sid, self.os_type)
+
+                    if out:
+                        print(brightgreen + out)
+                    else:
+                        print(brightyellow + "[*] No proxy configuration found")
+                    continue
+
+                #################################################################################################
+                ##################################System Commands################################################
+                #################################################################################################
+                #################################################################################################
+
+                elif user == "sysinfo":
+                    out = system.sysinfo(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    else:
+                        print(brightyellow + "[*] No output or error")
+                    continue
+
+                elif user == "ps":
+                    out = system.ps(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    else:
+                        print(brightyellow + "[*] No output or error")
+                    continue
+
+                elif user == "getuid":
+                    out = system.getuid(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    else:
+                        print(brightyellow + "[*] No output or error")
+                    continue
+
+                elif user == "getprivs":
+                    out = system.getprivs(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    else:
+                        print(brightyellow + "[*] No output or error")
+                    continue
+
+                elif user.strip() == "getpid":
+                    out = system.getpid(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                # getenv: retrieve one or more env vars
+                elif user.startswith("getenv"):
+                    parts = shlex.split(user)
+
+                    if len(parts) == 1:
+                        out = system.getenv(self.sid, self.os_type)
+
+                    else:
+                        vars_to_fetch = parts[1:]
+                        out = system.getenv(self.sid, self.os_type, *vars_to_fetch)
+
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                elif user.startswith("exec"):
+                    parts = shlex.split(user)
+                    if len(parts) < 2:
+                        print(brightyellow + "Usage: exec <command> [args...]")
+                        continue
+
+                    cmdparts = parts[1:]
+
+                    out = system.exec(self.sid, self.os_type, *cmdparts)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                # kill: terminate a PID
+                elif user.startswith("kill"):
+                    parts = shlex.split(user)
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: kill <pid>")
+                        continue
+
+                    pid = parts[1]
+
+                    out = system.kill(self.sid, self.os_type, pid)
+                    if out:
+                        print(out)
+                    continue
+
+                # getsid: show current Windows SID
+                elif user.startswith("getsid"):
+                    out = system.getsid(self.sid, self.os_type)
+
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                elif user.startswith("clearev"):
+                    parts = shlex.split(user)
+                    if len(parts) > 1:
+                        if (p in ("-f", "--force") for p in parts[1:]):
+                            force = True
+
+                    elif len(parts) > 1:
+                        if (p not in ("-f", "--force") for p in parts[1:]):
+                            print(brightyellow + f"Usage: clearev  OPTIONAL: -f or --force")
+
+                    else:
+                        force = False
+
+                    print(brightyellow + "[*] Clearing event logs (this may take a while)...")
+                    out = system.clearev(self.sid, self.os_type, force=force)
+
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                # show remote local time
+                elif user.startswith("localtime"):
+                    out = system.localtime(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                # reboot remote host
+                elif user.startswith("reboot"):
+                    out = system.reboot(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                # pgrep: pattern
+                elif user.startswith("pgrep"):
+                    parts = shlex.split(user, 1)
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: pgrep <pattern>")
+                        continue
+
+                    pattern = parts[1]
+
+                    out = system.pgrep(self.sid, self.os_type, pattern)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                # pkill: pattern
+                elif user.startswith("pkill"):
+                    parts = shlex.split(user, 1)
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: pkill <pattern>")
+                        continue
+
+                    pid = parts[1]
+
+                    out = system.pkill(self.sid, self.os_type, pid)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                elif user.startswith("suspend"):
+                    parts = shlex.split(user)
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: suspend <pid>")
+                        continue
+
+                    pid = parts[1]
+                    out = system.suspend(self.sid, self.os_type, pid)
+                    print(brightgreen + out if out else brightred + f"[!] Failed to suspend {pid}")
+                    continue
+
+                elif user.startswith("resume"):
+                    parts = shlex.split(user)
+                    if len(parts) != 2:
+                        print(brightyellow + "Usage: resume <pid>")
+                        continue
+
+                    pid = parts[1]
+                    out = system.resume(self.sid, self.os_type, pid)
+                    print(brightgreen + out if out else brightred + f"[!] Failed to resume {pid}")
+                    continue
+
+                elif user.startswith("shutdown"):
+                    parts = shlex.split(user)
+                    # shutdown [ -r | -h ]
+                    try:
+                        args = parts[1:]  # may be empty or ['-r'] or ['-h']
+
+                    except Exception:
+                        args = None
+                        pass
+
+                    out = system.shutdown(self.sid, self.os_type, *args)
+                    print(brightgreen + out if out else brightred + "[!] Shutdown failed")
+                    continue
+
+                elif user.startswith("reg "):
+                    parts = shlex.split(user, 4)
+                    if len(parts) < 3:
+                        print(brightyellow + "Usage: reg <query|get|set|delete> <hive>\\<path> [<name> <data>] [/s|/f]")
+                        continue
+
+                    action = parts[1].lower()
+                    hive_path = parts[2].rstrip("\\")   # strip any trailing “\”
+
+                    # if there’s a backslash in hive_path it splits into hive/key_path,
+                    # otherwise key_path becomes an empty string
+                    if "\\" in hive_path:
+                        hive, key_path = hive_path.split("\\", 1)
+                    else:
+                        hive, key_path = hive_path, ""
+
+                    name_or_flag = parts[3] if len(parts) >= 4 else None
+                    data        = parts[4] if len(parts) == 5 else None
+
+                    out = system.reg(self.sid, self.os_type, action, hive, key_path, name_or_flag, data)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                elif user.startswith("services"):
+                    parts = shlex.split(user)
+                    if len(parts) < 2 or parts[1] not in ("list","start","stop","restart"):
+                        print(brightyellow + "Usage: services <list|start|stop|restart> [<service_name>]")
+                        continue
+
+                    action = parts[1]
+                    svc = parts[2] if len(parts) == 3 else None
+                    out = system.services(self.sid, self.os_type, action, svc)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                # netusers: list local user accounts
+                elif user.strip() == "netusers":
+                    out = system.netusers(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                # netgroups: list local group accounts
+                elif user.strip() == "netgroups":
+                    out = system.netgroups(self.sid, self.os_type)
+                    if out:
+                        print(brightgreen + out)
+                    continue
+
+                elif user.startswith("steal_token"):
+                    parts = shlex.split(user)
+                    # show full help if no args or just "steal_token"
+                    if len(parts) < 2:
+                        print_gunnershell_help("steal_token")
+                        continue
+
+                    # invoke the backend
+                    out = system.steal_token(self.sid, self.os_type, *parts[1:])
+
+                    if out:
+                        # if the handler returned usage or an argparse error, re-show detailed help
+                        if out.lower().startswith("usage:"):
+                            print_gunnershell_help("steal_token")
+                        else:
+                            # any other error or message
+                            print(brightyellow + out)
+                    else:
+                        # success: server’s up and payload is launching
+                        print(brightgreen + "[+] steal_token dispatched.")
+
+                    continue
+
                 else:
                     print(brightred + f"[!] Unknown command!")
+
         except (EOFError, KeyboardInterrupt):
             print()
+
         finally:
             readline.set_completer(None)

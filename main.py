@@ -25,6 +25,7 @@ from core.gunnershell.gunnershell import Gunnershell
 
 from core.payload_generator import *
 from core.banner import print_banner
+from core.prompt_manager import prompt_manager
 
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -141,13 +142,14 @@ def operator_loop():
     bind_keys()
     global search_results, current_module
     while True:
-        user = input(PROMPT).strip()
+        user = input(prompt_manager.get_prompt()).strip()
 
         if not user:
             continue
 
         elif user == "\x0c":  # Control+L
             os.system("clear")
+            prompt_manager.print_prompt()
             continue
 
          # --- Help system ---
@@ -304,7 +306,7 @@ def operator_loop():
                 continue
                 #print("Usage: upload -i <session_id> -l <local_file> -r <remote_file>")
 
-        elif user.startswith("gunnershell"):
+        elif user.startswith("gunnershell") or user.startswith("gs"):
             parts = shlex.split(user)
             if len(parts) != 2:
                 print(brightyellow + "Usage: gunnershell <session_id_or_alias>")
@@ -329,6 +331,7 @@ def operator_loop():
                     gs.interact()
 
                 else:
+                    prompt_manager.set_prompt(PROMPT)
                     pass
             except ValueError as e:
                 print(brightred + str(e))

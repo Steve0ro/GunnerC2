@@ -469,6 +469,9 @@ Example:
     "getproxy":  "getproxy\n    Display the remote Windows proxy settings.",
     "ipconfig":  "ipconfig    Display network interfaces (Windows: ipconfig /all; Linux/macOS: ifconfig -a)",
     "ifconfig":  "Alias for ipconfig",
+    "portscan": """portscan [-Pn] <IP_or_subnet>
+Scan common TCP ports on one host or a /24 (ARP-primes gateway/targets, skips unreachable hosts).
+Use -Pn to skip the ICMP “alive” check.""",
     # ────────────────────────────────────────────────────────────────────────────────
     # System Commands
     # ────────────────────────────────────────────────────────────────────────────────
@@ -565,6 +568,7 @@ def print_gunnershell_help(cmd: str=None):
         net_cmds = {
             "netstat":   "Show sockets and listening ports",
             "ifconfig":  "List network interfaces",
+            "portscan":  "Scan common TCP ports (with ARP-based host discovery)",
             "portfwd":   "Manage port-forwards on this session",
             "arp":       "Display ARP table",
             "resolve":   "Resolve hostname(s)",

@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import datetime
 import tempfile
 import readline
+from core.prompt_manager import prompt_manager
 
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -169,10 +170,10 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
         print(brightred + f"[!] Unknown listener type detected!")
 
     if not is_ssl:
-        print(brightyellow + f"\n[+] TCP listener started on {ip}:{port}")
+        print(brightyellow + f"[+] TCP listener started on {ip}:{port}")
 
     elif is_ssl:
-        print(brightyellow + f"\n[+] TLS listener started on {ip}:{port}")
+        print(brightyellow + f"[+] TLS listener started on {ip}:{port}")
 
     while True:
         raw_client, addr = server_socket.accept()
@@ -215,14 +216,17 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
         session = session_manager.sessions[sid]
         transport = session.transport.upper()
 
-        if prompt_print == 1:
+        """if prompt_print == 1:
             utils.async_note(brightgreen + f"[+] New {transport} agent: {sid}", PROMPT)
 
         elif prompt_print == 0:
             print(brightgreen + f"[+] New {transport} agent: {sid}")
 
         else:
-            print(brightred + f"[!] An unknown error has ocurred!")
+            print(brightred + f"[!] An unknown error has ocurred!")"""
+
+        print(brightgreen + f"\n[+] New {transport} agent: {sid}")
+        prompt_manager.print_prompt()
 
         # DRAIN BANNER (important!)
         client_socket.settimeout(0.5)

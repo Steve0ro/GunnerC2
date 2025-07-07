@@ -49,7 +49,7 @@ def ls(sid, os_type, path):
         return out
 
     elif sess.transport.lower() in ("tcp", "tls"):
-        out =  shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out =  shell.run_command_tcp(sid, cmd, timeout=1)
         return out
 
     else:
@@ -144,7 +144,7 @@ def cd(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=True)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -152,6 +152,7 @@ def cd(sid, os_type, path):
 
     # return the new cwd if we got one
     if out:
+        #out = out.rstrip("\\/")
         return out
 
     else:

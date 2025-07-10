@@ -116,8 +116,18 @@ def collect_tcp_metadata(sid):
 
                 result = response.decode(errors="ignore").strip()
                 lines = [line for line in result.splitlines() if line.strip() not in ("$", "#", ">")]
-                result_cleaned = "\n".join(lines).strip()
-                session.metadata[field] = result_cleaned
+                #result_cleaned = "\n".join(lines).strip()
+                
+                if len(lines) > 1:
+                    clean = lines[1] if lines else ""
+                    session.metadata[field] = clean
+
+                elif len(lines) == 1:
+                    clean = lines[0] if lines else ""
+                    session.metadata[field] = clean
+
+                else:
+                    print(brightred + f"[!] Failed to execute metadata collecting commands!")
 
             except Exception as e:
                 print(brightred + f"[!] Metadata collection failed for {sid} (field: {field}): {e}")
@@ -158,6 +168,7 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
 
     except OSError:
         print(brightred + f"[!] Specified port is already in use")
+        return None
 
     server_socket.listen(5)
     if is_ssl:

@@ -166,8 +166,23 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
             # Handle metadata collection
             if session.metadata_stage < len(session.metadata_fields):
                 field = session.metadata_fields[session.metadata_stage]
-                session.metadata[field] = output
-                session.metadata_stage += 1
+                lines = [
+                    line.strip()
+                    for line in output.splitlines()
+                    if line.strip() not in ("$", "#", ">") and line.strip() != ""
+                ]
+                if len(lines) > 1:
+                    clean = lines[1] if lines else ""
+                    session.metadata[field] = clean
+                    session.metadata_stage += 1
+
+                elif len(lines) == 1:
+                    clean = lines[0] if lines else ""
+                    session.metadata[field] = clean
+                    session.metadata_stage += 1
+
+                else:
+                    print(brightred + f"[!] Failed to execute metadata collecting commands!")
 
             else:
                 session.output_queue.put(output_b64)

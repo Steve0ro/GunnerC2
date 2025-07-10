@@ -12,6 +12,7 @@ from core.gunnershell.filesystem_master import *
 from core.gunnershell import filesystem_master as filesystem
 from core.gunnershell import network_master as net
 from core.gunnershell import system_master as system
+from core.gunnershell import userinterface_master as ui
 from colorama import init, Fore, Style
 from core.prompt_manager import prompt_manager
 
@@ -26,6 +27,7 @@ UNDERLINE_OFF = "\001\x1b[24m\002"
 #MODULE_DIR = os.path.join(os.path.dirname(__file__), "modules")
 
 MODULE_DIR = BASE_MODULE_DIR
+MAIN_HISTORY = os.path.expanduser("~/.gunnerc2_history")
 
 class Gunnershell:
     """
@@ -42,6 +44,21 @@ class Gunnershell:
         display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
         self.sid = real
         self.display = display
+        self.MAIN_HIST = os.path.expanduser("~/.gunnerc2_history")
+        SESSION_HIST = os.path.expanduser(f"~/.gunnerc2_gs_{self.sid}_history")
+        self.SESSION_HIST = SESSION_HIST
+
+        
+        readline.write_history_file(self.MAIN_HIST)
+        
+        readline.clear_history()
+        
+        try:
+            readline.read_history_file(self.SESSION_HIST)
+
+        except FileNotFoundError:
+            pass
+
         self.session = session_manager.sessions[self.sid]
         prompt = f"{UNDERLINE_ON}{brightblue}GunnerShell{UNDERLINE_OFF} > "
         prompt_manager.set_prompt(prompt)
@@ -50,16 +67,6 @@ class Gunnershell:
         self.available = discover_module_files(MODULE_DIR)
         self.os_type = self.session.metadata.get("os","").lower()
         self.cwd = pwd(self.sid, self.os_type) or ""
-        """find_dir = pwd(self.sid, self.os_type)
-        if "\\" in find_dir:
-            self.cwd = find_dir.replace("\\", "\\\\")
-
-        elif "\\" not in find_dir:
-            self.cwd = find_dir
-
-        else:
-            print(brightred + f"[!] An unknown error has ocurred!")"""
-
 
     def make_abs(self, p):
         """
@@ -1087,6 +1094,24 @@ class Gunnershell:
 
                     continue
 
+                #################################################################################################
+                ##################################User Interface Commands########################################
+                #################################################################################################
+                #################################################################################################
+
+                elif user.startswith("screenshot"):
+                    parts = shlex.split(user)
+                    if len(parts) == 1:
+                        ui.screenshot(self.sid)   
+
+                    elif len(parts) == 2:
+                        ui.screenshot(self.sid, parts[1])
+
+                    else:
+                        print(brightyellow + "Usage: screenshot [<local_path>]")
+                        continue
+
+
                 else:
                     print(brightred + f"[!] Unknown command!")
 
@@ -1094,4 +1119,20 @@ class Gunnershell:
             print()
 
         finally:
-            readline.set_completer(None)
+                try:
+                    readline.write_history_file(self.SESSION_HIST)
+
+                except Exception:
+                    pass
+
+            
+                readline.clear_history()
+           
+                try:
+                    readline.read_history_file(self.MAIN_HIST)
+
+                except FileNotFoundError:
+                    pass
+
+                # restore no-completer
+                readline.set_completer(None)

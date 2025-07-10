@@ -569,33 +569,3 @@ def edit(sid, os_type, remote_path):
     # cleanup & done
     os.remove(local_tmp)
     return f"Edited and re-uploaded {remote_path}"
-
-
-
-def search(sid: str, pattern: str) -> str:
-    return _run_remote(sid, f"find . -iname '*{pattern}*'")
-
-
-#
-# — Local operations (aliases for l* commands) —
-#
-def lls(path: str = "."):
-    return "\n".join(os.listdir(path))
-
-def ldir(path: str = "."):
-    return lls(path)
-
-def lpwd():
-    return os.getcwd()
-
-def lcd(path: str):
-    os.chdir(path)
-    return lpwd()
-
-def lcat(path: str):
-    with open(path, "r", errors="ignore") as f:
-        return f.read()
-
-def lmkdir(path: str):
-    os.makedirs(path, exist_ok=True)
-    return f"Created local directory {path}"

@@ -319,6 +319,12 @@ Example (TCP):
 Example (HTTP):
   generate -f ps1 -obs 2 -p http-win -lh 192.168.2.228 -lp 8080 --beacon_interval 5 -o payload.ps1
 """,
+    "exec": """exec -i <session_id> <command> [args...]
+Execute an arbitrary OS command on the specified session (supports wildcards).
+Examples:
+  exec -i abc123 whoami /all
+  exec -i abc123 ls -la /tmp
+""",
     "download": """download -i <session_id> -f <remote_file> -o <local_file>\n-i <session_id>   Specify the session ID from which to download the file.\n-f <remote_file>  The path of the remote file to download.\n-o <local_file>   The local path where the file will be saved.\n\nExample:\ndownload -i 12345 -f /home/user/file.txt -o /tmp/file.txt""",
     "upload": """upload -i <session_id> -l <local_file> -r <remote_file>\n-i <session_id>   Specify the session ID to which to upload the file.\n-l <local_file>   The local file to upload.\n-r <remote_file>  The path on the remote system to upload the file to.\n\nExample:\nupload -i 12345 -l /tmp/localfile.txt -r /home/user/remotefile.txt""",
     "banner": """banner
@@ -530,6 +536,10 @@ clearev [-f|--force]
     "services":   "services <list|start|stop|restart> [name]   Manage services",
     "netusers":   "netusers    List local user accounts",
     "netgroups":  "netgroups   List local group accounts",
+    # ────────────────────────────────────────────────────────────────────────────────
+    # System Commands
+    # ────────────────────────────────────────────────────────────────────────────────
+    "screenshot": "screenshot <local_path>\n    Capture the remote interactive desktop and save it locally.",
  }
 
 def print_gunnershell_help(cmd: str=None):
@@ -602,6 +612,10 @@ def print_gunnershell_help(cmd: str=None):
             "netgroups": "List local group accounts",
             "steal_token":"Steal Windows token and inject stage-1 PowerShell payload",
         }
+        ui_cmds = {
+            "screenshot": "Capture remote desktop screenshot",
+
+        }
 
         # print Core
         print(brightyellow + "\nCore Commands\n=============\n")
@@ -620,6 +634,10 @@ def print_gunnershell_help(cmd: str=None):
         print()
         print(brightyellow + "System Commands\n===============\n")
         for name, desc in sys_cmds.items():
+            print(brightgreen + f"{name:<25} {desc}")
+        print()
+        print(brightyellow + "\nUser Interface Commands\n=======================\n")
+        for name, desc in ui_cmds.items():
             print(brightgreen + f"{name:<25} {desc}")
         print(brightyellow + "\nFor detailed help run: help <command> [subcommand]\n")
         return

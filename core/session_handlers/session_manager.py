@@ -1,5 +1,9 @@
 import queue
 import base64
+import fnmatch
+import uuid
+import threading
+import signal
 
 class Session:
     def __init__(self, sid, transport, handler):
@@ -50,37 +54,144 @@ class Session:
                 ("arch", 'powershell.exe -Command "(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture)"')
             ]
 
+class TimeoutException(Exception):
+    test = "dummyvalue"
+
+def _timeout_handler(signum, frame):
+    raise TimeoutException("Operation timed out!")
+
+signal.signal(signal.SIGALRM, _timeout_handler)
+
 # Global sessions dictionary
 sessions = {}
 alias_map: dict[str,str] = {}
 dead_sessions: set[str] = set()
 
-def kill_http_session(sid: str) -> bool:
-    sess = sessions.pop(sid, None)
-    if not sess:
-        return False
- 
-    # tell the implant to shut down on its next poll
-    sess.command_queue.put(base64.b64encode(b"exit").decode())
+def kill_http_session(sid, beacon_interval=False):
+    """if str(sid).lower() == "all":
+        # make a static list since we'll be mutating sessions
+        all_sids = list(sessions.keys())
 
-    # remember we killed it, so we never re-register it
+        for s in all_sids:
+            sess = sessions[s]
+            meta = sess.metadata
+            os_type = sess.meta.get("os", "").lower()
+            transport = sess.transport.lower()
+            display = next((a for a, rsid in alias_map.items() if rsid == s), s)
+
+            # clean up any aliases
+            for alias, real in list(alias_map.items()):
+                if real == s:
+                    del alias_map[alias]
+
+            if transport in ("http", "https") and beacon_interval is False:
+                return "BEACON_INTERVAL REQUIRED"
+
+            if transport in ("http", "https"):
+                # enqueue the EXIT_SHELL token
+                if os_type == "linux":
+                    cmd = "set -m; PGID=$$ ; trap 'exit 0' TERM INT; kill -TERM -0; exit 0"
+                    sess.command_queue.put(base64.b64encode(cmd.encode()).decode())
+                elif os_type == "windows":
+                    cmd = "Stop-Process -Id $PID -Force"
+                    sess.command_queue.put(base64.b64encode(cmd.encode()).decode())
+                else:
+                    print(brightred + f"[!] Unsupported operating system running on agent {display}")
+                # wait for at least one beacon interval so the implant can pull it
+                time.sleep(beacon_interval + 1)
+                dead_sessions.add(s)
+                del sessions[s]
+                print(brightyellow + f"[*] Killed HTTP session {display}")
+
+            elif transport == "tcp":
+                # immediately tear down the socket
+                sess.handler.close()
+                dead_sessions.add(s)
+                del sessions[s]
+                print(brightyellow + f"[*] Closed TCP session {display}")
+
+            else:
+                print(brightred + f"[!] Unknown transport for session {display}, removing anyway")
+                dead_sessions.add(s)
+                del sessions[s]
+
+        return True"""
+
+    session = sessions[sid]
+    if not session:
+        return False
+
+    # pick an OS‐appropriate self‐kill snippet
+    if os_type.lower() == "windows":
+        # Stop the PowerShell process in which the implant is running
+        kill_snippet = "Stop-Process -Id $PID -Force"
+
+    elif os_type.lower() == "linux":
+        kill_snippet = "set -m; PGID=$$ ; trap 'exit 0' TERM INT; kill -TERM -0; exit 0"
+
+    else:
+        print(brightred + f"[!] Cannot kill session for unsupported operating system!")
+
+    b64_cmd = base64.b64encode(kill_snippet.encode()).decode()
+
+    # Queue the kill command (base64‐encoded) so the implant runs it on next poll
+    session.command_queue.put(b64_cmd)
+
+    # mark this session as dead so we don't re-register it
     dead_sessions.add(sid)
- 
+
     # clean up any aliases pointing to it
     for alias, real in list(alias_map.items()):
         if real == sid:
             del alias_map[alias]
+
+    sess = sessions.pop(sid, None)
     return True
 
-def set_alias(alias: str, sid: str):
+def set_alias(alias: str, sid: str):   
     """Point alias → real SID."""
     alias_map[alias] = sid
 
-def resolve_sid(name: str) -> str|None:
-    """Turn either a real SID or an alias into the real SID."""
-    if name in sessions:
-        return name
-    return alias_map.get(name)
+def resolve_sid(raw: str) -> str|None:
+    """Given a raw input (SID or alias), return the canonical SID, or None."""
+    # exact alias match?
+    if raw in alias_map:
+        return alias_map[raw]
+
+    # WILDCARD: if the user typed '*' or '?' in their SID, try glob match
+    try:
+        if any(ch in raw for ch in "*?"):
+            # collect all real SIDs and their aliases
+            # (we only need to match against sessions keys and alias_map keys)
+            matches = [
+                sid for sid in sessions
+                if fnmatch.fnmatch(sid, raw)
+            ]
+            # also match against alias names, resolving to real SIDs
+            matches += [
+                alias_map[alias]
+                for alias in alias_map
+                if fnmatch.fnmatch(alias, raw)
+            ]
+            # de-duplicate while preserving order
+            matches = list(dict.fromkeys(matches))
+
+            if len(matches) == 1:
+                return matches[0]
+
+            elif len(matches) > 1:
+                print(brightred + f"[!] Ambiguous session pattern '{raw}' → matches {matches!r}")
+
+    except Exception as e:
+        print(brightred + f"[!] Failed to resolve sid: {e}")
+            
+
+    # exact SID?
+    if raw in sessions:
+        return raw
+
+    # no match
+    return None
 
 def register_http_session(sid):
     sessions[sid] = Session(sid, 'http', queue.Queue())

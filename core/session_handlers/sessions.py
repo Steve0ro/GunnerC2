@@ -29,7 +29,8 @@ class SessionManager:
     def register_http_session(self, sid):
         if sid not in self.sessions:
             self.sessions[sid] = queue.Queue()
-            print(brightgreen + f"\n[+] New HTTP agent: {sid}")
+            #print(brightgreen + f"\n[+] New HTTP agent: {sid}")
+            print("TEST")
             sys.stdout.write(PROMPT)
             sys.stdout.flush()
 

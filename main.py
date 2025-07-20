@@ -14,6 +14,7 @@ import base64
 import queue
 import atexit
 import time
+import requests
 
 from core.module_loader import load_module
 from core.module_loader import search_modules, discover_module_files
@@ -25,6 +26,7 @@ from core.utils import portforwards, unregister_forward, list_forwards, defender
 from core.gunnershell.gunnershell import Gunnershell
 
 from core.payload_generator.payload_generator import *
+from core.payload_generator.common import malleable_c2 as malleable
 from core.banner import print_banner
 from core.prompt_manager import prompt_manager
 
@@ -53,15 +55,21 @@ try:
 except FileNotFoundError:
 	pass
 
-def _save_main_history():
-	readline.write_history_file(HISTORY_FILE)
-	atexit.register(_save_main_history)
+def delete_history_file():
+	try:
+		os.remove(HISTORY_FILE)
+	except FileNotFoundError:
+		pass
+
+atexit.register(delete_history_file)
 
 
 class SilentParser(argparse.ArgumentParser):
 	def error(self, message):
 		# override to suppress default usage+error output
 		raise SystemExit(1)
+
+
 
 
 def get_all_modules():
@@ -159,8 +167,15 @@ def operator_loop():
 			prompt_manager.print_prompt()
 			continue
 
+		if user:
+			try:
+				readline.write_history_file(HISTORY_FILE)
+
+			except Exception:
+				pass
+
 		 # --- Help system ---
-		elif user.startswith("help"):
+		if user.startswith("help"):
 			parts = shlex.split(user)
 
 			if len(parts) == 1:
@@ -326,12 +341,27 @@ def operator_loop():
 				continue
 
 			sid = session_manager.resolve_sid(parts[1])
+			session = session_manager.sessions[sid]
 			display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 			if not sid or sid not in session_manager.sessions:
 				print(brightred + f"No such session or alias: {parts[1]}")
 				continue
 
 			try:
+				while True:
+					if session.mode != "cmd":
+						continue
+
+					else:
+						break
+
+				meta = session.metadata
+				os = meta.get("os", "").lower()
+
+				if os not in ("linux", "windows"):
+					print(brightred + f"Unsupported operating system on {display}")
+					continue
+
 				print(brightgreen + f"[*] Starting GunnerShell on {display}...")
 				time.sleep(0.1)
 				gs = Gunnershell(sid)
@@ -346,6 +376,7 @@ def operator_loop():
 
 				else:
 					prompt_manager.set_prompt(PROMPT)
+					bind_keys()
 					pass
 			except ValueError as e:
 				print(brightred + str(e))
@@ -389,8 +420,7 @@ def operator_loop():
 				try:
 					parsed = parser.parse_args(parts)
 				except SystemExit:
-					print("test")
-					print(brightyellow + "Usage: start https <ip> <port> [-c <certfile> -k <keyfile>]")
+					utils.print_help("start https", False)
 					continue
 
 				threading.Thread(
@@ -400,7 +430,7 @@ def operator_loop():
 				).start()
 
 			except Exception:
-				print(brightyellow + "Usage: start https <ip> <port> [-c <certfile> -k <keyfile>]")
+				utils.print_help("start https", False)
 				pass
 
 				
@@ -408,10 +438,37 @@ def operator_loop():
 		elif user.startswith("start http"):
 			try:
 				_, _, ip, port = user.split()
-				port = int(port)
-				threading.Thread(target=http_handler.start_http_listener, args=(ip, port), daemon=True).start()
+
 			except:
-				print(brightyellow + "Usage: start http <ip> <port>")
+				utils.print_help("start http", False)
+
+			port = int(port)
+			threading.Thread(target=http_handler.start_http_listener, args=(ip, port), daemon=True).start()
+
+		elif user.startswith("start tls"):
+			# shorthand for "start tcp … --ssl"
+			try:
+				parts = shlex.split(user)
+				parser = SilentParser(prog="start tls", add_help=False)
+				parser.add_argument("start")
+				parser.add_argument("tls")
+				parser.add_argument("ip")
+				parser.add_argument("port", type=int)
+				parser.add_argument("-c", dest="certfile", help="TLS certificate file", required=False)
+				parser.add_argument("-k", dest="keyfile", help="TLS key file", required=False)
+				parsed = parser.parse_args(parts)
+
+			except SystemExit:
+				utils.print_help("start tls", False)
+				continue
+
+			# call the exact same TCP listener, but force SSL on
+			threading.Thread(
+				target=tcp_listener.start_tcp_listener,
+				args=(parsed.ip, parsed.port, parsed.certfile, parsed.keyfile, True),
+				daemon=True
+			).start()
+			continue
 
 		elif user.startswith("start tcp"):
 			try:
@@ -420,23 +477,20 @@ def operator_loop():
 				parser.add_argument("start")
 				parser.add_argument("tcp")
 				parser.add_argument("ip")
-				parser.add_argument("--ssl", dest="ssl", action="store_true", help="Run listener with TLS/SSL", required=False)
 				parser.add_argument("port", type=int)
-				parser.add_argument("-c", dest="certfile", help="TLS certificate file", required=False)
-				parser.add_argument("-k", dest="keyfile", help="TLS key file", required=False)
 
 				try:
 					parsed = parser.parse_args(parts)
 
 				except SystemExit:
-					pass
+					utils.print_help("start tcp", False)
 					#print(brightyellow + "Usage: start tcp <ip> <port> [-c <certfile> -k <keyfile>]")
 
 				ip = parsed.ip
 				port = parsed.port
-				certfile = parsed.certfile
-				keyfile = parsed.keyfile
-				is_ssl = parsed.ssl
+				certfile = None
+				keyfile = None
+				is_ssl = False
 
 				try:
 					if is_ssl:
@@ -478,7 +532,7 @@ def operator_loop():
 				).start()
 
 			except Exception:
-				print(brightyellow + "Usage: start tcp <ip> <port> [-c <certfile> -k <keyfile>]")
+				utils.print_help("start tcp", False)
 				pass
 
 		elif user == "listeners":
@@ -500,8 +554,8 @@ def operator_loop():
 						print(brightred + "Unknown session type.")
 				else:
 					print(brightred + "Invalid session ID.")
+
 			except Exception as e:
-				print(e)
 				print(brightyellow + "Usage: shell <session_id>")
 
 		elif user.startswith("alias"):
@@ -566,10 +620,15 @@ def operator_loop():
 				parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
 				parser.add_argument("-p", "--payload", choices=["http"], required=True)
 				parser.add_argument("-o", "--output", required=False)
+				parser.add_argument("--jitter", type=int, default=0, help="Jitter percentage to randomize beacon interval (e.g., 30 = ±30%)")
+				parser.add_argument("-H", "--headers", dest="headers", action="append", type=malleable.parse_headers, help="Custom HTTP header; either 'Name: Value' or JSON dict")
+				parser.add_argument("--useragent", required=False, help="Custom User-Agent string")
+				parser.add_argument("--accept", required=False, default=False, help="Set the Accept header value")
+				parser.add_argument("--range", required=False, default=False, help="Set the Range header value (e.g., 'bytes=0-1024')")
 				parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
 				parser.add_argument("-lh", "--local_host", required=True)
 				parser.add_argument("-lp", "--local_port", required=True)
-				parser.add_argument("--beacon_interval", required=True)
+				parser.add_argument("--interval", required=True)
 
 			elif payload_type == "https":
 				parser = SilentParser(prog="generate (https)", add_help=False)
@@ -577,10 +636,15 @@ def operator_loop():
 				parser.add_argument("-obs", "--obfuscation", type=int, choices=[1,2,3], default=False, required=False)
 				parser.add_argument("-p", "--payload", choices=["https"], required=True)
 				parser.add_argument("-o", "--output", required=False)
+				parser.add_argument("--jitter", type=int, default=0, help="Jitter percentage to randomize beacon interval (e.g., 30 = ±30%)")
+				parser.add_argument("-H", "--headers", dest="headers", action="append", type=malleable.parse_headers, help="Custom HTTP header; either 'Name: Value' or JSON dict")
+				parser.add_argument("--useragent", required=False, default=False, help="Custom User-Agent string")
+				parser.add_argument("--accept", required=False, default=False, help="Set the Accept header value")
+				parser.add_argument("--range", required=False, default=False, help="Set the Range header value (e.g., 'bytes=0-1024')")
 				parser.add_argument("--os", choices=["windows","linux"], default="windows", help="Target OS for the payload", required=False)
 				parser.add_argument("-lh", "--local_host", required=True)
 				parser.add_argument("-lp", "--local_port", required=True)
-				parser.add_argument("--beacon_interval", required=True)
+				parser.add_argument("--interval", required=True)
 
 			else:
 				print(brightred + f"Unknown payload type: {payload_type}")
@@ -589,28 +653,72 @@ def operator_loop():
 			# Parse remaining args
 			try:
 				args = parser.parse_args(parts[1:])
+				all_headers = {}
+
+				if payload_type in ("http", "https"):
+					useragent = args.useragent
+					accept = args.accept
+					byte_range = args.range
+
+				else:
+					useragent = None
+					accept = None
+					byte_range = None
+
+				if payload_type in ("http", "https"):
+
+					if getattr(args, "headers", None):
+						for hdr in args.headers:
+							all_headers.update(hdr)
+
+						# Header keys to normalize and extract
+						key_map = {
+							"user-agent": "useragent",
+							"accept": "accept",
+							"range": "byte_range"
+						}
+
+						for k, var_name in key_map.items():
+							found_keys = [h for h in all_headers if h.lower() == k]
+
+							if found_keys:
+								if locals()[var_name] is False:  # Not explicitly set via flag
+									locals()[var_name] = all_headers[found_keys[0]]
+
+								for key in found_keys:
+									del all_headers[key]
+
+					else:
+						all_headers = {}
 
 			except SystemExit:
 				print(brightyellow + utils.commands["generate"])
 				continue
 
+
 			if payload_type == "tcp":
 				if args.ssl:
 					args.ssl = True
-					ssl = args.ssl
+					ssl_flag = args.ssl
 
 				else:
 					args.ssl = False
-					ssl = args.ssl
+					ssl_flag = args.ssl
 
 			else:
-				ssl = False
+				ssl_flag = False
 
 			if payload_type not in ("http", "https"):
 				beacon_interval = False
 
 			else:
-				beacon_interval = args.beacon_interval
+				beacon_interval = args.interval
+
+			if payload_type in ("http", "https"):
+				jitter = getattr(args, "jitter", 0)
+
+			else:
+				jitter = None
 
 			if args.obfuscation == False:
 				obfuscation = 0
@@ -626,10 +734,10 @@ def operator_loop():
 				print(brightred + f"[!] The --os and -f arguments are required: {e}")
 
 			if os_type == "windows":
-				raw = generate_payload_windows(args.local_host, args.local_port, obfuscation, ssl, format_type, payload_type, beacon_interval)
+				raw = generate_payload_windows(args.local_host, args.local_port, obfuscation, ssl_flag, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter)
 
 			elif os_type == "linux":
-				raw = generate_payload_linux(args.local_host, args.local_port, obfuscation, ssl, format_type, payload_type, beacon_interval)
+				raw = generate_payload_linux(args.local_host, args.local_port, obfuscation, ssl_flag, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter)
 
 			else:
 				print(brightred + f"[!] Unsupported operating system selected!")
@@ -1019,6 +1127,7 @@ help                 - Display this help menu
 		else:
 			#print("TEST")
 			print(brightred + "Unknown command.")
+
 
 if __name__ == "__main__":
 	# NO MORE PRINTER THREAD

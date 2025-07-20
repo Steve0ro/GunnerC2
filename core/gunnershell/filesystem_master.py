@@ -49,7 +49,7 @@ def ls(sid, os_type, path):
         return out
 
     elif sess.transport.lower() in ("tcp", "tls"):
-        out =  shell.run_command_tcp(sid, cmd, timeout=1)
+        out =  shell.run_command_tcp(sid, cmd, timeout=1, portscan_active=True)
         return out
 
     else:
@@ -95,7 +95,7 @@ def pwd(sid, os_type):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -144,7 +144,7 @@ def cd(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=True, portscan_active=True)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -197,7 +197,7 @@ def cat(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -233,7 +233,7 @@ def cp(sid, os_type, src, dst):
         out = shell.run_command_http(sid, cmd)
 
     elif sess.transport.lower() in ("tls", "tcp"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -275,7 +275,7 @@ def delete(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     return out or None
 
@@ -311,7 +311,7 @@ def mkdir(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     return out or None
 
@@ -346,7 +346,7 @@ def touch(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     return out or None
 
@@ -378,7 +378,7 @@ def mv(sid, os_type, src, dst):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -406,6 +406,7 @@ def rmdir(sid, os_type, path):
         return None
 
     sess = session_manager.sessions.get(sid)
+
     if not sess:
         print(brightred + f"[!] No such session: {display}")
         return None
@@ -415,7 +416,7 @@ def rmdir(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -452,7 +453,7 @@ def checksum(sid, os_type, path):
         out = shell.run_command_http(sid, cmd)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -494,7 +495,7 @@ def drives(sid, os_type):
         out = shell.run_command_http(sid, cmd)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     return out or None
 
@@ -509,9 +510,17 @@ def edit(sid, os_type, remote_path):
         return f"[!] No such session: {display}"
 
     # choose download/upload functions
-    is_http = sess.transport.lower() in ("http", "https")
-    dl = shell.download_file_http if is_http else shell.download_file_tcp
-    ul = shell.upload_file_http   if is_http else shell.upload_file_tcp
+    if sess.transport.lower() in ("http", "https"):
+        dl = shell.download_file_http
+        shell.upload_file_http
+
+    elif sess.transport.lower() in ("tcp", "tls"):
+        dl = shell.download_file_tcp
+        ul = shell.upload_file_tcp
+
+    else:
+        print(brightred + f"[!] Unsupported session type {display}")
+        return None
 
     # create a temp file
     fname = os.path.basename(remote_path)

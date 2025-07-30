@@ -5,6 +5,8 @@ import threading
 from socketserver import ThreadingMixIn
 from core import utils
 from core.session_handlers import session_manager
+from core.print_override import set_output_context
+from core import print_override
 import random
 import string
 import os,sys,subprocess
@@ -82,10 +84,26 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
             if sid not in session_manager.sessions:
                 if getattr(self.server, "scheme", "http") == "https":
                     session_manager.register_https_session(sid)
-                    utils.async_note(brightgreen + f"[+] New HTTPS agent: {sid}", prompt_manager.get_prompt(), reprint=True)
+                    msg = f"[+] New HTTPS agent: {sid}"
+                    utils.echo(msg,
+                        to_console=False,
+                        to_op=None,
+                        world_wide=True,
+                        color=brightgreen,
+                        _raw_printer=print_override._orig_print,
+                        end='\n')
+                    #utils.async_note(brightgreen + f"[+] New HTTPS agent: {sid}", prompt_manager.get_prompt(), reprint=True)
                 else:
                     session_manager.register_http_session(sid)
-                    utils.async_note(brightgreen + f"[+] New HTTP agent: {sid}", prompt_manager.get_prompt(), reprint=True)
+                    msg = f"[+] New HTTP agent: {sid}"
+                    utils.echo(msg,
+                        to_console=False,
+                        to_op=None,
+                        world_wide=True,
+                        color=brightgreen,
+                        _raw_printer=print_override._orig_print,
+                        end='\n')
+                    #utils.async_note(brightgreen + f"[+] New HTTP agent: {sid}", prompt_manager.get_prompt(), reprint=True)
 
             session = session_manager.sessions[sid]
             
@@ -258,9 +276,17 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         return
 
-def start_http_listener(ip, port):
+def start_http_listener(ip, port, to_console=True, op_id=None):
+    if to_console:
+        set_output_context(to_console=True)
+        print_type = "console"
+
+    elif op_id:
+        set_output_context(to_console=False, to_op=op_id)
+        print_type = "operator"
+
     try:
-        utils.async_note(brightyellow + f"[+] HTTP listener started on {ip}:{port}", prompt_manager.get_prompt())
+        print(brightyellow + f"[+] HTTP listener started on {ip}:{port}")
         #sys.stdout.write(PROMPT)
         #sys.stdout.flush()
         httpd = ThreadingHTTPServer((ip, port), C2HTTPRequestHandler)

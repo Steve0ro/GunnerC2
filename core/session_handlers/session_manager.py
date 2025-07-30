@@ -17,6 +17,7 @@ class Session:
         self.sid = sid
         self.transport = transport
         self.handler = handler
+        self.lock = threading.Lock()
         self.command_queue = queue.Queue()
         self.output_queue = queue.Queue()
         self.meta_command_queue = queue.Queue()
@@ -57,12 +58,12 @@ class Session:
                 ("arch", "uname -m")
             ]
         else:
-            #self.metadata["os"] = "Windows"
+            self.metadata["os"] = "Windows"
             self.metadata_fields = ["hostname", "user", "os", "arch"]
             self.os_metadata_commands = [
                 ("hostname", "hostname"),
                 ("user", "whoami"),
-                ("os", "powershell.exe -nop -Command \"((cmd.exe /c ver) | Select-String -Pattern 'Windows').Matches.Value\""),
+                #("os", "powershell.exe -nop -Command \"((cmd.exe /c ver) | Select-String -Pattern 'Windows').Matches.Value\""),
                 ("arch", 'powershell.exe -Command "(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture)"')
             ]
 

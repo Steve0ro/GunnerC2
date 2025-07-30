@@ -103,7 +103,8 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 	client_socket.setblocking(False)
 	try:
 		while True:
-			chunk = client_socket.recv(1024 * 2000)
+			with session.lock:
+				chunk = client_socket.recv(1024 * 2000)
 			if not chunk:
 				break
 	except (socket.timeout, BlockingIOError, OSError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
@@ -111,8 +112,9 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 
 	finally:
 		# put the timeout back for the real command
-		client_socket.setblocking(True)
-		client_socket.settimeout(timeout)
+		with session.lock:
+			client_socket.setblocking(True)
+			client_socket.settimeout(timeout)
 	# =============================================
 	
 	try:
@@ -130,19 +132,22 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 
 	try:
 		try:
-			client_socket.sendall(cmd.encode() + b"\n")
+			with session.lock:
+				client_socket.sendall(cmd.encode() + b"\n")
 
 		except Exception as e:
 			print(brightred + f"[-] ERROR failed to send command over socket: {e}")
-			
-		client_socket.settimeout(timeout)
+		
+		with session.lock:
+			client_socket.settimeout(timeout)
 		response = b''
 		got_any = False
 		count = 0
 
 		while True:
 			try:
-				chunk = client_socket.recv(4096)
+				with session.lock:
+					chunk = client_socket.recv(4096)
 
 				if not chunk:
 					break
@@ -177,12 +182,14 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 
 				# we did get *some* data, now drain whatever's left
 				# save old blocking/timeout state
-				old_timeout = client_socket.gettimeout()
-				# switch to non-blocking
-				client_socket.setblocking(False)
+				with session.lock:
+					old_timeout = client_socket.gettimeout()
+					# switch to non-blocking
+					client_socket.setblocking(False)
 				try:
 					while True:
-						client_socket.recv(1024 * 2000)
+						with session.lock:
+							client_socket.recv(1024 * 2000)
 
 				except BlockingIOError:
 					# no more data in the OS buffer
@@ -190,8 +197,9 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 
 				finally:
 					# restore original state
-					client_socket.setblocking(True)
-					client_socket.settimeout(old_timeout)
+					with session.lock:
+						client_socket.setblocking(True)
+						client_socket.settimeout(old_timeout)
 
 				break
 
@@ -287,6 +295,7 @@ def interactive_http_shell(sid):
 			if not cmd:
 				continue
 
+			
 			while not session.output_queue.empty():
 				try:
 					session.output_queue.get_nowait()
@@ -347,14 +356,15 @@ def interactive_tcp_shell(sid):
 
 	if os_type == "linux":
 		clean_shell_cmd = b'export PS1="" && unset PROMPT_COMMAND\n'
-		client_socket.sendall(clean_shell_cmd)
-		# drain any prompt leftovers
-		client_socket.settimeout(1.0)
-		try:
-			drain = client_socket.recv(4096)
+		with session.lock:
+			client_socket.sendall(clean_shell_cmd)
+			# drain any prompt leftovers
+			client_socket.settimeout(1.0)
+			try:
+				drain = client_socket.recv(4096)
 
-		except socket.timeout:
-			pass
+			except socket.timeout:
+				pass
 
 	try:
 		while True:
@@ -387,7 +397,8 @@ def interactive_tcp_shell(sid):
 				print(brightred + f"[!] Error happened in session defender")
 
 			if cmd.strip().lower() in ("exit", "quit"):
-				client_socket.close()
+				with session.lock:
+					client_socket.close()
 				del session_manager.sessions[sid]
 				print(brightyellow + f"[*] Closed {transport} session {display}")
 				break
@@ -400,19 +411,22 @@ def interactive_tcp_shell(sid):
 				continue
 
 			try:
-				client_socket.sendall(cmd.encode() + b"\n")
+				with session.lock:
+					client_socket.sendall(cmd.encode() + b"\n")
 
 			except BrokenPipeError:
 				print(brightred + "[!] Connection closed by remote host.")
 				break
 
-			client_socket.settimeout(0.5)
+			with session.lock:
+				client_socket.settimeout(0.5)
 			response = b''
 			got_any = False
 
 			while True:
 				try:
-					chunk = client_socket.recv(4096)
+					with session.lock:
+						chunk = client_socket.recv(4096)
 
 					if not chunk:
 						break
@@ -425,12 +439,14 @@ def interactive_tcp_shell(sid):
 						print(brightred + f"[!] Connection timed out waiting on agent {display}")
 						break
 
-					old_timeout = client_socket.gettimeout()
-					# switch to non-blocking
-					client_socket.setblocking(False)
+					with session.lock:
+						old_timeout = client_socket.gettimeout()
+						# switch to non-blocking
+						client_socket.setblocking(False)
 					try:
 						while True:
-							client_socket.recv(1024 * 2000)
+							with session.lock:
+								client_socket.recv(1024 * 2000)
 
 					except BlockingIOError:
 						# no more data in the OS buffer
@@ -441,8 +457,9 @@ def interactive_tcp_shell(sid):
 
 					finally:
 						# restore original state
-						client_socket.setblocking(True)
-						client_socket.settimeout(old_timeout)
+						with session.lock:
+							client_socket.setblocking(True)
+							client_socket.settimeout(old_timeout)
 
 					break
 
@@ -450,13 +467,15 @@ def interactive_tcp_shell(sid):
 			clean = utils.normalize_output(output, cmd)
 			print(clean)
 
-			old_timeout = client_socket.gettimeout()
-			client_socket.settimeout(0.0)
-			client_socket.setblocking(False)
+			with session.lock:
+				old_timeout = client_socket.gettimeout()
+				client_socket.settimeout(0.0)
+				client_socket.setblocking(False)
 
 			try:
 				while True:
-					chunk = client_socket.recv(1024 * 2000)
+					with session.lock:
+						chunk = client_socket.recv(1024 * 2000)
 
 					if not chunk:
 						break
@@ -465,9 +484,10 @@ def interactive_tcp_shell(sid):
 				pass
 
 			finally:
-				# put the timeout back for the real command
-				client_socket.setblocking(True)
-				client_socket.settimeout(old_timeout)
+				with session.lock:
+					# put the timeout back for the real command
+					client_socket.setblocking(True)
+					client_socket.settimeout(old_timeout)
 
 	except Exception as e:
 		print(brightred + f"[!] Error: {e}")

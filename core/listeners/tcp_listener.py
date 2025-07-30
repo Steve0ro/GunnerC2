@@ -14,6 +14,7 @@ import datetime
 import tempfile
 import readline
 from core.prompt_manager import prompt_manager
+from core.print_override import set_output_context
 
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -72,6 +73,9 @@ def generate_tls_context(listen_ip):
 
     # Load into SSL context
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
     context.verify_mode = ssl.CERT_NONE
     context.load_cert_chain(certfile=cert_file.name, keyfile=key_file.name)
     return context
@@ -153,7 +157,7 @@ def collect_tcp_metadata(sid):
                     session.metadata[field] = "Error"
 
             except Exception as e:
-                utils.async_note(brightred + f"[!] Metadata collection failed for {sid} (field: {field}): {e}", prompt_manager.get_prompt())
+                print(brightred + f"[!] Metadata collection failed for {sid} (field: {field}): {e}")
                 session.metadata[field] = "Error"
 
         session.mode = "cmd"
@@ -163,11 +167,26 @@ def collect_tcp_metadata(sid):
         session.metadata["os"] = "Unknown"
         prompt_manager.print_prompt()
 
-def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
+def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None, to_console=True, op_id=None):
+    if to_console:
+        set_output_context(to_console=True)
+        print_type = "console"
+
+    elif op_id:
+        set_output_context(to_console=False, to_op=op_id)
+        print_type = "operator"
+
+    def printer(msg, color=None, world_wide=False):
+        if world_wide:
+            printer = utils.echo(msg, to_console=True, to_op=False, world_wide=True, color=color)
+
+        else:
+            printer = utils.echo(msg, to_console=True, to_op=False, world_wide=False, color=color)
+
     if is_ssl:
         if cert_path and key_path:
             if not (os.path.isfile(cert_path) and os.path.isfile(key_path)):
-                print(brightred + "[-] Specified cert or key file not found. Exiting listener.")
+                print(brightred + "[!] Specified cert or key file not found. Exiting listener.")
                 return
 
             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -208,11 +227,11 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
 
     if not is_ssl:
         #print(brightyellow + f"\n[+] TCP listener started on {ip}:{port}")
-        utils.async_note(brightyellow + f"[+] TCP listener started on {ip}:{port}", prompt_manager.get_prompt())
+        print(brightyellow + f"[+] TCP listener started on {ip}:{port}")
         #prompt_manager.print_prompt()
 
     elif is_ssl:
-        utils.async_note(brightyellow + f"[+] TLS listener started on {ip}:{port}", prompt_manager.get_prompt())
+        print(brightyellow + f"[+] TLS listener started on {ip}:{port}")
 
     while True:
         raw_client, addr = server_socket.accept()
@@ -233,8 +252,8 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
                 ssl_sock.do_handshake()
                 client_socket = ssl_sock
 
-            except (ssl.SSLError, socket.timeout) as e:
-                print(brightred + f"[-] TLS handshake failed from {addr}: {e}")
+            except (ssl.SSLError, socket.timeout):
+                print(brightred + f"[!] TLS handshake failed from {addr}")
                 raw_client.close()
                 continue
         else:
@@ -248,7 +267,7 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
 
         except Exception as e:
             # if for some reason the wrapped socket doesn’t like it, ignore
-            print(brightred + f"[!] Warning: couldn't tune socket: {e}")
+            print(brightred + f"[!] Warning: couldn't tune socket")
 
         sid = utils.gen_session_id()
         session_manager.register_tcp_session(sid, client_socket, is_ssl)
@@ -265,7 +284,13 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None):
             print(brightred + f"[!] An unknown error has ocurred!")"""
 
         #print(brightgreen + f"\n[+] New {transport} agent: {sid}")
-        utils.async_note(brightgreen + f"[+] New {transport} agent: {sid}", prompt_manager.get_prompt(), reprint=True)
+        set_output_context(world_wide=True)
+        print(brightgreen + f"[+] New {transport} agent: {sid}")
+        if print_type == "console":
+            set_output_context(to_console=True)
+
+        elif print_type == "operator":
+            set_output_context(to_console=False, to_op=op_id)
 
         # DRAIN BANNER (important!)
         client_socket.settimeout(0.5)

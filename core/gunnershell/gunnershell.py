@@ -1,3 +1,7 @@
+import logging
+logger = logging.getLogger(__name__)
+
+from core.print_override import set_output_context
 import shlex
 import readline
 import ntpath
@@ -8,7 +12,6 @@ from core.session_handlers.session_manager import resolve_sid
 from core.utils import print_help, print_gunnershell_help, gunnershell_commands
 from core import shell, portfwd, utils
 from core.session_handlers import session_manager
-from core.print_override import set_output_context
 from core.banner import print_banner
 from core.gunnershell.filesystem_master import *
 from core.gunnershell import filesystem_master as filesystem
@@ -26,6 +29,7 @@ brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 UNDERLINE_ON  = "\001\x1b[4m\002"
 UNDERLINE_OFF = "\001\x1b[24m\002"
+reset = Style.RESET_ALL
 
 #MODULE_DIR = os.path.join(os.path.dirname(__file__), "modules")
 
@@ -45,8 +49,10 @@ class Gunnershell:
 	  gs.interact()
 	"""
 	def __init__(self, sid, op_id=None):
+		logger.debug(brightblue + f"IN __INIT__ GUNNERSHELL FUNC WITH SID {sid} AS OP {op_id} ABOUT TO RESOLVE SID" + reset)
 		real = resolve_sid(sid)
 		if not real or real not in session_manager.sessions:
+			logger.debug(brightred + f"INVALID SESSION {sid}" + reset)
 			raise ValueError(brightred + f"Invalid session: {sid}")
 
 		display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
@@ -55,6 +61,7 @@ class Gunnershell:
 		self.MAIN_HIST = os.path.expanduser("~/.gunnerc2_history")
 		SESSION_HIST = os.path.expanduser(f"~/.gunnerc2_gs_{self.sid}_history")
 		self.SESSION_HIST = SESSION_HIST
+		logger.debug(brightblue + "SUCCESSFULLY SET GUNNERSHELL HISTORY FILES" + reset) 
 
 		
 		self.session = session_manager.sessions[self.sid]
@@ -66,10 +73,24 @@ class Gunnershell:
 			prompt_manager.set_prompt(prompt, op_id)
 			self.prompt = prompt_manager.get_prompt(op_id)
 
+		logger.debug(brightblue + f"SET GUNNERSHELL PROMPTS FOR SID {sid} AS OP {op_id}" + reset)
+
 		# discover available modules once
 		self.available = discover_module_files(MODULE_DIR)
 		self.os_type = self.session.metadata.get("os","").lower()
-		self.cwd = pwd(self.sid, self.os_type) or ""
+		if op_id:
+			logger.debug(brightblue + f"GETTING PWD WITH OP ID: {op_id}" + reset)
+			self.cwd = pwd(self.sid, self.os_type, op_id=op_id) or ""
+
+		else:
+			logger.debug(brightblue + "GETTING PWD WITH MAIN C2 CONSOLE" + reset)
+			self.cwd = pwd(self.sid, self.os_type, op_id="console") or ""
+
+		if op_id:
+			logger.debug(brightgreen + f"SUCCESSFULLY INITALIZED GUNNERSHELL FOR SID {sid} as OP {op_id}" + reset)
+
+		else:
+			logger.debug(brightgreen + f"SUCCESSFULLY INITALIZED GUNNERSHELL FOR SID {sid} as CONSOLE" + reset)
 
 	def make_abs(self, p):
 		"""
@@ -121,6 +142,9 @@ class Gunnershell:
 		set_output_context(to_console=to_console, to_op=op_id, world_wide=False)
 		#readline.set_completer(self.completer)
 		#readline.parse_and_bind("tab: complete")
+
+		if not op_id:
+			op_id = "console"
 		try:
 			user = cmd
 			try:
@@ -159,8 +183,12 @@ class Gunnershell:
 
 				# help
 				if len(parts) == 1:
-					print_gunnershell_help()
-					return
+					out = print_gunnershell_help(to_console=to_console, op_id=op_id)
+					if out:
+						return out
+
+					else:
+						logger.debug("HELP OUTPUT NOT FOUND")
 
 				# help <command>
 				elif len(parts) == 2:
@@ -488,10 +516,15 @@ class Gunnershell:
 					safe = target.rstrip("\\/")
 					cmd  = f"ls -force -path '{safe}'"
 					# bypass the defender for root listings
-					out = shell.run_command_tcp(self.sid,cmd,timeout=0.5,defender_bypass=True)
+					transport = self.session.transport.lower()
+					if transport in ("tcp", "tls"):
+						out = shell.run_command_tcp(self.sid,cmd,timeout=0.5,defender_bypass=True, op_id=op_id)
+
+					elif transport in ("http", "https"):
+						out = shell.run_command_http(self.sid, cmd, defender_bypass=True, op_id=op_id)
 
 				else:
-					out = ls(self.sid, self.os_type, target)
+					out = ls(self.sid, self.os_type, target, op_id=op_id)
 
 				if out:
 					print(brightgreen + f"\n{out}")
@@ -501,7 +534,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "pwd":
-				cwd = pwd(self.sid, self.os_type)
+				cwd = pwd(self.sid, self.os_type, op_id=op_id)
 				if cwd:
 					print(brightgreen + cwd)
 
@@ -517,7 +550,7 @@ class Gunnershell:
 					return
 
 				target = parts[1]
-				new_cwd = cd(self.sid, self.os_type, target)
+				new_cwd = cd(self.sid, self.os_type, target, op_id=op_id)
 
 				if new_cwd:
 					self.cwd = new_cwd
@@ -528,7 +561,7 @@ class Gunnershell:
 					return
 				return
 
-			elif cmd == "cat":
+			elif cmd == "cat" or cmd == "type":
 				parts = None
 				try:
 					parts = shlex.split(user, 1)
@@ -538,13 +571,21 @@ class Gunnershell:
 					# fallback if they had an unescaped trailing backslash
 					parts = user.split(maxsplit=1)
 
-				except Exception as e:
-					print(brightred + f"[!] We hit an error while parsing your command: {e}")
+				except Exception:
+					if cmd == "cat":
+						print(brightyellow + "Usage: cat <filepath>")
+
+					else:
+						print(brightyellow + "Usage: type <filepath>")
 					return
 
 				# require exactly one argument
 				if len(parts) != 2:
-					print(brightyellow + "Usage: cat <filepath>")
+					if cmd == "cat":
+						print(brightyellow + "Usage: cat <filepath>")
+
+					else:
+						print(brightyellow + "Usage: type <filepath>")
 					return
 
 				# decide absolute vs relative
@@ -565,7 +606,7 @@ class Gunnershell:
 						target = os.path.normpath(joined)
 
 				# finally invoke remote cat
-				out = cat(self.sid, self.os_type, target)
+				out = cat(self.sid, self.os_type, target, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 
@@ -592,7 +633,7 @@ class Gunnershell:
 					src = self.make_abs(raw_src)
 					dst = self.make_abs(raw_dst)
 
-				out = filesystem.cp(self.sid, self.os_type, src, dst)
+				out = filesystem.cp(self.sid, self.os_type, src, dst, op_id=op_id)
 
 				if out:
 					print(brightgreen + out)
@@ -620,7 +661,7 @@ class Gunnershell:
 				if raw:
 					raw = self.make_abs(raw)
 
-				out = delete(self.sid, self.os_type, raw)
+				out = delete(self.sid, self.os_type, raw, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 
@@ -650,7 +691,7 @@ class Gunnershell:
 					print(brightred + f"[!] An unknown error ocurred!")
 					return
 
-				out = mkdir(self.sid, self.os_type, raw_path)
+				out = mkdir(self.sid, self.os_type, raw_path, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 
@@ -674,7 +715,7 @@ class Gunnershell:
 
 				raw = self.make_abs(raw)
 
-				out = touch(self.sid, self.os_type, raw)
+				out = touch(self.sid, self.os_type, raw, op_id=op_id)
 
 				if out:
 					print(brightgreen + out)
@@ -700,7 +741,7 @@ class Gunnershell:
 				# make raw absolute against cwd if it isn’t already
 				raw = self.make_abs(raw)
 
-				out = filesystem.checksum(self.sid, self.os_type, raw)
+				out = filesystem.checksum(self.sid, self.os_type, raw, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
@@ -724,7 +765,7 @@ class Gunnershell:
 				raw_src = self.make_abs(raw_src)
 				raw_dst = self.make_abs(raw_dst)
 
-				out = filesystem.mv(self.sid, self.os_type, raw_src, raw_dst)
+				out = filesystem.mv(self.sid, self.os_type, raw_src, raw_dst, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 					return
@@ -748,14 +789,14 @@ class Gunnershell:
 				
 				raw = self.make_abs(raw)
 
-				out = filesystem.rmdir(self.sid, self.os_type, raw)
+				out = filesystem.rmdir(self.sid, self.os_type, raw, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 					return
 				return
 
 			elif cmd == "drives":
-				out = filesystem.drives(self.sid, self.os_type)
+				out = filesystem.drives(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + f"\n{out}")
 						
@@ -780,7 +821,7 @@ class Gunnershell:
 				# resolve relative → absolute against cwd
 				raw = self.make_abs(raw)
 
-				result = filesystem.edit(self.sid, self.os_type, raw)
+				result = filesystem.edit(self.sid, self.os_type, raw, op_id=op_id)
 				print(brightgreen + result)
 				return
 
@@ -791,7 +832,7 @@ class Gunnershell:
 			#################################################################################################
 
 			elif cmd == "netstat":
-				out = net.netstat(self.sid, self.os_type)
+				out = net.netstat(self.sid, self.os_type, op_id=op_id)
 				print(brightgreen + f"\n{out}")
 				return
 
@@ -807,7 +848,7 @@ class Gunnershell:
 					print(brightyellow + "Usage: ipconfig")
 					return
 
-				out = net.ipconfig(self.sid, self.os_type)
+				out = net.ipconfig(self.sid, self.os_type, op_id=op_id)
 
 				if out:
 					print(brightgreen + out)
@@ -816,7 +857,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "arp":
-				out = net.arp(self.sid, self.os_type)
+				out = net.arp(self.sid, self.os_type, op_id=op_id)
 				print(brightgreen + f"\n{out}")
 				return
 
@@ -829,12 +870,12 @@ class Gunnershell:
 					print(brightred + f"[!] We hit an error while parsing your command: {e}")
 					return
 
-				out = net.resolve(self.sid, self.os_type, host)
+				out = net.resolve(self.sid, self.os_type, host, op_id=op_id)
 				print(brightgreen + f"\n{out}")
 				return
 
 			elif cmd == "route":
-				out = net.route(self.sid, self.os_type)
+				out = net.route(self.sid, self.os_type, op_id=op_id)
 				print(brightgreen + f"\n{out}")
 				return
 
@@ -850,7 +891,7 @@ class Gunnershell:
 					print(brightyellow + "Usage: getproxy")
 					return
 
-				out = net.getproxy(self.sid, self.os_type)
+				out = net.getproxy(self.sid, self.os_type, op_id=op_id)
 
 				if out:
 					print(brightgreen + out)
@@ -885,7 +926,7 @@ class Gunnershell:
 					return
 
 				target = args[0]
-				out = net.portscan(self.sid, self.os_type, target,skip_ping=skip_ping, port_spec=ports_arg)
+				out = net.portscan(self.sid, self.os_type, target,skip_ping=skip_ping, port_spec=ports_arg, op_id=op_id)
 					
 				if out:
 					print(brightgreen + f"\n{out}")
@@ -895,7 +936,7 @@ class Gunnershell:
 
 			elif cmd == "hostname":
 				# simply grab the remote hostname
-				out = net.hostname(self.sid, self.os_type)
+				out = net.hostname(self.sid, self.os_type, op_id=op_id)
 
 				if out:
 					if "[!]" in out:
@@ -929,7 +970,8 @@ class Gunnershell:
 					sid=self.sid,
 					local_host=opts.lh,
 					socks_port=opts.sp,
-					local_port=opts.lp
+					local_port=opts.lp,
+					op_id=op_id
 				)
 				return
 
@@ -939,7 +981,7 @@ class Gunnershell:
 			#################################################################################################
 
 			elif cmd == "sysinfo":
-				out = system.sysinfo(self.sid, self.os_type)
+				out = system.sysinfo(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				else:
@@ -947,7 +989,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "ps":
-				out = system.ps(self.sid, self.os_type)
+				out = system.ps(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				else:
@@ -955,7 +997,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "getuid" or cmd == "whoami":
-				out = system.getuid(self.sid, self.os_type)
+				out = system.getuid(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				else:
@@ -963,7 +1005,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "getprivs":
-				out = system.getprivs(self.sid, self.os_type)
+				out = system.getprivs(self.sid, self.os_type, op_id=op_id)           
 
 				if out:
 					if "[!]" not in out:
@@ -976,7 +1018,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "groups":
-				out = system.groups(self.sid, self.os_type)
+				out = system.groups(self.sid, self.os_type, op_id=op_id)
 
 				if out:
 					if "[!]" not in out:
@@ -989,7 +1031,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "getav":
-				out = system.getav(self.sid, self.os_type)
+				out = system.getav(self.sid, self.os_type, op_id=op_id)
 
 				if out:
 					print(brightgreen + out)
@@ -999,7 +1041,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "defenderoff":
-				out = system.defenderoff(self.sid, self.os_type)
+				out = system.defenderoff(self.sid, self.os_type, op_id=op_id)
 				
 				if out:
 					if "[!]" in out:
@@ -1013,7 +1055,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "amsioff":
-				out = system.amsioff(self.sid, self.os_type)
+				out = system.amsioff(self.sid, self.os_type, op_id=op_id)
 				if out:
 					if "[!]" in out:
 						print(out)
@@ -1025,7 +1067,7 @@ class Gunnershell:
 				return
 
 			elif cmd == "getpid":
-				out = system.getpid(self.sid, self.os_type)
+				out = system.getpid(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
@@ -1035,11 +1077,11 @@ class Gunnershell:
 				parts = shlex.split(user)
 
 				if len(parts) == 1:
-					out = system.getenv(self.sid, self.os_type)
+					out = system.getenv(self.sid, self.os_type, op_id=op_id)
 
 				else:
 					vars_to_fetch = parts[1:]
-					out = system.getenv(self.sid, self.os_type, *vars_to_fetch)
+					out = system.getenv(self.sid, self.os_type, *vars_to_fetch, op_id=op_id)
 
 				if out:
 					print(brightgreen + out)
@@ -1053,7 +1095,7 @@ class Gunnershell:
 
 				cmdparts = parts[1:]
 
-				out = system.exec(self.sid, self.os_type, *cmdparts)
+				out = system.exec(self.sid, self.os_type, *cmdparts, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
@@ -1067,14 +1109,14 @@ class Gunnershell:
 
 				pid = parts[1]
 
-				out = system.kill(self.sid, self.os_type, pid)
+				out = system.kill(self.sid, self.os_type, pid, op_id=op_id)
 				if out:
 					print(out)
 				return
 
 			# getsid: show current Windows SID
 			elif cmd == "getsid":
-				out = system.getsid(self.sid, self.os_type)
+				out = system.getsid(self.sid, self.os_type, op_id=op_id)
 
 				if out:
 					print(brightgreen + out)
@@ -1094,7 +1136,7 @@ class Gunnershell:
 					force = False
 
 				print(brightyellow + "[*] Clearing event logs (this may take a while)...")
-				out = system.clearev(self.sid, self.os_type, force=force)
+				out = system.clearev(self.sid, self.os_type, force=force, op_id=op_id)
 
 				if out:
 					print(brightgreen + out)
@@ -1102,14 +1144,14 @@ class Gunnershell:
 
 			# show remote local time
 			elif cmd == "localtime":
-				out = system.localtime(self.sid, self.os_type)
+				out = system.localtime(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
 
 			# reboot remote host
 			elif cmd == "reboot":
-				out = system.reboot(self.sid, self.os_type)
+				out = system.reboot(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
@@ -1123,9 +1165,12 @@ class Gunnershell:
 
 				pattern = parts[1]
 
-				out = system.pgrep(self.sid, self.os_type, pattern)
+				out = system.pgrep(self.sid, self.os_type, pattern, op_id=op_id)
 				if out:
 					print(brightgreen + out)
+
+				else:
+					print(brightyellow + f"[*] Cannot find matching process {pattern}")
 				return
 
 			# pkill: pattern
@@ -1137,7 +1182,7 @@ class Gunnershell:
 
 				pid = parts[1]
 
-				out = system.pkill(self.sid, self.os_type, pid)
+				out = system.pkill(self.sid, self.os_type, pid, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
@@ -1149,7 +1194,7 @@ class Gunnershell:
 					return
 
 				pid = parts[1]
-				out = system.suspend(self.sid, self.os_type, pid)
+				out = system.suspend(self.sid, self.os_type, pid, op_id=op_id)
 				print(brightgreen + out if out else brightred + f"[!] Failed to suspend {pid}")
 				return
 
@@ -1160,7 +1205,7 @@ class Gunnershell:
 					return
 
 				pid = parts[1]
-				out = system.resume(self.sid, self.os_type, pid)
+				out = system.resume(self.sid, self.os_type, pid, op_id=op_id)
 				print(brightgreen + out if out else brightred + f"[!] Failed to resume {pid}")
 				return
 
@@ -1174,7 +1219,7 @@ class Gunnershell:
 					args = None
 					pass
 
-				out = system.shutdown(self.sid, self.os_type, *args)
+				out = system.shutdown(self.sid, self.os_type, *args, op_id=op_id)
 				print(brightgreen + out if out else brightred + "[!] Shutdown failed")
 				return
 
@@ -1197,7 +1242,7 @@ class Gunnershell:
 				name_or_flag = parts[3] if len(parts) >= 4 else None
 				data        = parts[4] if len(parts) == 5 else None
 
-				out = system.reg(self.sid, self.os_type, action, hive, key_path, name_or_flag, data)
+				out = system.reg(self.sid, self.os_type, action, hive, key_path, name_or_flag, data, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
@@ -1207,24 +1252,24 @@ class Gunnershell:
 				if len(parts) < 2 or parts[1] not in ("list","start","stop","restart"):
 					print(brightyellow + "Usage: services <list|start|stop|restart> [<service_name>]")
 					return
-
+ 
 				action = parts[1]
 				svc = parts[2] if len(parts) == 3 else None
-				out = system.services(self.sid, self.os_type, action, svc)
+				out = system.services(self.sid, self.os_type, action, svc, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
 
 			# netusers: list local user accounts
 			elif cmd == "netusers":
-				out = system.netusers(self.sid, self.os_type)
+				out = system.netusers(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
 
 			# netgroups: list local group accounts
 			elif cmd == "netgroups":
-				out = system.netgroups(self.sid, self.os_type)
+				out = system.netgroups(self.sid, self.os_type, op_id=op_id)
 				if out:
 					print(brightgreen + out)
 				return
@@ -1237,7 +1282,7 @@ class Gunnershell:
 					return
 
 				# invoke the backend
-				out = system.steal_token(self.sid, self.os_type, *parts[1:])
+				out = system.steal_token(self.sid, self.os_type, *parts[1:], op_id=op_id)
 
 				if out:
 					# if the handler returned usage or an argparse error, re-show detailed help
@@ -1260,10 +1305,10 @@ class Gunnershell:
 			elif cmd == "screenshot":
 				parts = shlex.split(user)
 				if len(parts) == 1:
-					ui.screenshot(self.sid)   
+					ui.screenshot(self.sid, op_id=op_id)   
 
 				elif len(parts) == 2:
-					ui.screenshot(self.sid, parts[1])
+					ui.screenshot(self.sid, parts[1], op_id=op_id)
 
 				else:
 					print(brightyellow + "Usage: screenshot [<local_path>]")
@@ -1318,6 +1363,7 @@ class Gunnershell:
 					script_path = opts.script_path,
 					stager   = opts.stager,
 					stage_port = opts.stager_port,
+					op_id=op_id
 				)
 
 				printed = 0
@@ -1383,6 +1429,7 @@ class Gunnershell:
 						shares   = opts.shares,
 						stager   = opts.stager,
 						stage_port = opts.stager_port,
+						op_id = op_id
 					)
 
 					try:
@@ -1433,6 +1480,7 @@ class Gunnershell:
 						debug    = opts.debug,
 						stager   = opts.stager,
 						stage_port = opts.stager_port,
+						op_id = op_id
 					)
 
 					try:
@@ -1487,6 +1535,7 @@ class Gunnershell:
 						debug = opts.debug,
 						stager   = opts.stager,
 						stage_port = opts.stager_port,
+						op_id = op_id
 					)
 
 					if out:
@@ -1542,6 +1591,7 @@ class Gunnershell:
 					debug    = opts.debug,
 					stager   = opts.stager,
 					stage_port = opts.stager_port,
+					op_id = op_id
 				)
 				if out:
 					if "[!]" not in out:
@@ -1584,6 +1634,7 @@ class Gunnershell:
 					debug    = opts.debug,
 					stager   = opts.stager,
 					stage_port = opts.stager_port,
+					op_id = op_id
 				)
 				if out:
 					if "[!]" not in out:
@@ -2110,7 +2161,11 @@ class Gunnershell:
 			print()
 
 	def loop(self, cmd=None, to_console=True, op_id=None):
+		#print("TEST IN GUNNERSHELL LOOP")
+		set_output_context(to_console=to_console, to_op=op_id)
+		logger.debug("GunnerShell.loop entry: cmd=%r, to_console=%r, op_id=%r", cmd, to_console, op_id)
 		if not cmd:
+			logger.debug("Entering interactive mode")
 			while True:
 				readline.clear_history()
 				readline.set_completer(self.completer)
@@ -2124,8 +2179,10 @@ class Gunnershell:
 
 				try:
 					user = input(self.prompt).strip()
+					logger.debug("Read user input: %r", user)
 
 					if not user:
+						logger.debug("Empty input, reprompting")
 						continue
 
 					else:
@@ -2146,6 +2203,9 @@ class Gunnershell:
 					readline.set_completer(None)
 
 		else:
-			out = self.interact(cmd, to_console=to_console, op_id=op_id)
+			logger.debug("Dispatching to interact()")
+			out = self.interact(cmd=cmd, to_console=to_console, op_id=op_id)
+			logger.debug("interact() returned: %r", out)
 			if out:
+				logger.debug("Returning from loop with output")
 				return out

@@ -19,7 +19,7 @@ brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 COLOR_RESET  = "\001\x1b[0m\002"
 
 
-def ls(sid, os_type, path):
+def ls(sid, os_type, path, op_id="console"):
     """
     List files on the remote host.
     
@@ -45,11 +45,11 @@ def ls(sid, os_type, path):
     # pick the right transport
     sess = session_manager.sessions[sid]
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
         return out
 
     elif sess.transport.lower() in ("tcp", "tls"):
-        out =  shell.run_command_tcp(sid, cmd, timeout=1, portscan_active=True)
+        out =  shell.run_command_tcp(sid, cmd, timeout=1, portscan_active=True, op_id=op_id)
         return out
 
     else:
@@ -59,7 +59,7 @@ def ls(sid, os_type, path):
         except Exception as e:
             print(brightred + f"[!] An unknown error has ocurred: {e}")
 
-def pwd(sid, os_type):
+def pwd(sid, os_type, op_id="console"):
     """
     Print the remote working directory.
 
@@ -92,10 +92,10 @@ def pwd(sid, os_type):
     # send it via HTTP(S) or TCP/TLS
     transport = sess.transport.lower()
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -107,7 +107,7 @@ def pwd(sid, os_type):
     else:
         return None
 
-def cd(sid, os_type, path):
+def cd(sid, os_type, path, op_id="console"):
     """
     Change the remote working directory and return the new cwd.
 
@@ -141,10 +141,10 @@ def cd(sid, os_type, path):
     # send it via HTTP(S) or TCP/TLS
     transport = sess.transport.lower()
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=True, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=True, portscan_active=True, op_id=op_id)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -160,7 +160,7 @@ def cd(sid, os_type, path):
 
 
 
-def cat(sid, os_type, path):
+def cat(sid, os_type, path, op_id="console"):
     """
     Print the contents of a file on the remote host.
 
@@ -194,10 +194,10 @@ def cat(sid, os_type, path):
     # send it via HTTP(S) or TCP/TLS
     transport = sess.transport.lower()
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -205,7 +205,7 @@ def cat(sid, os_type, path):
 
     return out or None
 
-def cp(sid, os_type, src, dst):
+def cp(sid, os_type, src, dst, op_id="console"):
     """
     Copy a file on the remote host.
       * Windows: uses PowerShell Copy-Item
@@ -230,10 +230,10 @@ def cp(sid, os_type, src, dst):
         return ""
 
     if sess.transport.lower() in ("http","https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     elif sess.transport.lower() in ("tls", "tcp"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -241,7 +241,7 @@ def cp(sid, os_type, src, dst):
 
     return out or None
 
-def delete(sid, os_type, path):
+def delete(sid, os_type, path, op_id="console"):
     """
     Delete a file on the remote host.
 
@@ -272,14 +272,14 @@ def delete(sid, os_type, path):
 
     transport = sess.transport.lower()
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=1.3, portscan_active=True, op_id=op_id)
 
     return out or None
 
-def mkdir(sid, os_type, path):
+def mkdir(sid, os_type, path, op_id="console"):
     """
     Create a directory on the remote host.
 
@@ -308,14 +308,14 @@ def mkdir(sid, os_type, path):
         return None
 
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     return out or None
 
-def touch(sid, os_type, path):
+def touch(sid, os_type, path, op_id="console"):
     """
     Create an empty file on the remote host (or update timestamp).
 
@@ -343,14 +343,14 @@ def touch(sid, os_type, path):
         return None
 
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     return out or None
 
-def mv(sid, os_type, src, dst):
+def mv(sid, os_type, src, dst, op_id="console"):
     """
     Move or rename a file/directory on the remote host.
     - Windows: uses PowerShell Move-Item
@@ -375,10 +375,10 @@ def mv(sid, os_type, src, dst):
 
     transport = sess.transport.lower()
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -387,7 +387,7 @@ def mv(sid, os_type, src, dst):
     return out or None
 
 
-def rmdir(sid, os_type, path):
+def rmdir(sid, os_type, path, op_id="console"):
     """
     Remove a directory on the remote host.
     - Windows: PowerShell Remove-Item -Recurse -Force
@@ -413,10 +413,10 @@ def rmdir(sid, os_type, path):
 
     transport = sess.transport.lower()
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -425,7 +425,7 @@ def rmdir(sid, os_type, path):
     return out or None
 
 
-def checksum(sid, os_type, path):
+def checksum(sid, os_type, path, op_id="console"):
     """
     Compute a SHA256 checksum of a file on the remote host.
     - Windows: Get-FileHash -Algorithm SHA256
@@ -450,10 +450,10 @@ def checksum(sid, os_type, path):
 
     transport = sess.transport.lower()
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         print(brightred + f"[!] Unsupported shell type: {transport}")
@@ -462,7 +462,7 @@ def checksum(sid, os_type, path):
     return out or None
 
 
-def drives(sid, os_type):
+def drives(sid, os_type, op_id="console"):
     """
     List mounted drives / filesystems on the remote host.
 
@@ -492,14 +492,14 @@ def drives(sid, os_type):
         return None
 
     if sess.transport.lower() in ("http", "https"):
-        out = shell.run_command_http(sid, cmd)
+        out = shell.run_command_http(sid, cmd, op_id=op_id)
 
     else:
-        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
     return out or None
 
-def edit(sid, os_type, remote_path):
+def edit(sid, os_type, remote_path, op_id="console"):
     """
     Download a remote file, verify it’s text, open it in $EDITOR (or nano), then re-upload it.
     Returns a status message.

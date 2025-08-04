@@ -1,4 +1,10 @@
+import logging
+
+logger = logging.getLogger(__name__)
+
 import base64, socket
+import re
+import threading
 from core import utils
 from core.session_handlers import session_manager, sessions
 from core.utils import defender
@@ -6,6 +12,7 @@ from core.session_handlers.sessions import SessionManager
 import queue
 import subprocess, os, sys
 from tqdm import tqdm
+from time import sleep
 import signal
 import tarfile
 import zipfile
@@ -21,6 +28,7 @@ brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
+reset = Style.RESET_ALL
 
 global global_tcpoutput_blocker
 global_tcpoutput_blocker = 0
@@ -32,51 +40,89 @@ def print_raw_progress(current, total, bar_width=40):
 	sys.stdout.write("\r" + bar)
 	sys.stdout.flush()
 
-def run_command_http(sid, cmd, output=True, defender_bypass=False):
+def run_command_http(sid, cmd, output=True, defender_bypass=False, op_id=False):
 	session = session_manager.sessions[sid]
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 	meta = session.metadata
 	os_type = meta.get("os", "").lower()
 	out_b64 = None
 
+	if op_id:
+		logger.debug(f"SETTING OP ID TO: {op_id}")
+		session.merge_command_queue.setdefault(op_id, queue.Queue())
+		session.merge_response_queue.setdefault(op_id, queue.Queue())
+
+	else:
+		logger.debug("SETTING ID TO CONSOLE")
+		op_id = "console"
+		session.merge_command_queue.setdefault(op_id, queue.Queue())
+		session.merge_response_queue.setdefault(op_id, queue.Queue())
+
 	defender_state = defender.is_active
 
-	while not session.output_queue.empty():
+	while not session.merge_response_queue[op_id].empty():
 		try:
-			session.output_queue.get_nowait()
+			session.merge_response_queue[op_id].get_nowait()
 
 		except queue.Empty:
 			break
 
+	"""while not session.output_queue.empty():
+		try:
+			session.output_queue.get_nowait()
+
+		except queue.Empty:
+			break"""
+
 	# === Session-Defender check ===
+	logger.debug("CHECKING IF SESSION DEFENDER IS ENABLED!!")
 	if defender_state and not defender_bypass:
 		if os_type in ("windows", "linux"):
 			if not defender.inspect_command(os_type, cmd):
 				print(brightred + "[!] Command blocked by Session-Defender.")
 				return None
 
-
+	logger.debug("ENCODING COMMAND")
 	b64_cmd = base64.b64encode(cmd.encode()).decode()
 
 	try:
-		session.command_queue.put(b64_cmd)
+		#session.command_queue.put(b64_cmd)
+		if op_id:
+			logger.debug(f"SENDING COMMAND TO OPERATOR: {op_id}")
+			session.merge_command_queue[op_id].put(b64_cmd)
+
+		else:
+			logger.debug("SENDING COMMAND DOWN CONSOLE QUEUE")
+			session.merge_command_queue["console"].put(b64_cmd)
 
 	except Exception as e:
-		print(brightred + f"[!] ERROR failed to send command through the queue: {e}")
+		logger.debug(brightred + f"[!] ERROR failed to send command through the queue: {e}" + reset)
 
 	if output:
 		try:
-			out_b64 = session.output_queue.get()
+			#out_b64 = session.output_queue.get()
+			if op_id:
+				logger.debug(f"GRABBING RESPONSE FROM OPERATOR: {op_id}")
+				out_b64 = session.merge_response_queue[op_id].get()
+
+			else:
+				logger.debug("GRABBING RESPONSE FROM CONSOLE")
+				out_b64 = session.merge_response_queue["console"].get()
 
 		except Exception as e:
-			print(brightred + f"[!] ERROR failed to get command output from queue: {e}")
+			logger.debug(brightred + f"[!] ERROR failed to get command output from queue: {e}" + reset)
 
 	else:
 		try:
-			out_b64 = session.output_queue.get_nowait()
+			#out_b64 = session.output_queue.get_nowait()
+			if op_id:
+				out_b64 = session.merge_response_queue[op_id].get_nowait()
+
+			else:
+				out_b64 = session.merge_response_queue["console"].get_nowait()
 
 		except Exception as e:
-			print(brightred + f"[!] Failed to fetch output in a no wait manner!")
+			logger.debug(brightred + f"[!] Failed to fetch output in a no wait manner!" + reset)
 
 
 	if out_b64 and output:
@@ -84,17 +130,18 @@ def run_command_http(sid, cmd, output=True, defender_bypass=False):
 			return base64.b64decode(out_b64).decode("utf-8", "ignore").strip()
 
 		except Exception as e:
-			print(brightred + f"[!] ERROR failed to decode command output: {e}")
+			logger.debug(brightred + f"[!] ERROR failed to decode command output: {e}" + reset)
 
 	else:
 		return
 
-def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_active=False, timeoutprint=True, retries=0):
+def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_active=False, timeoutprint=True, retries=0, op_id="console"):
 	session = session_manager.sessions[sid]
 	meta = session.metadata
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 	client_socket = session.handler
 	os_type = meta.get("os", "").lower()
+	recv_lock = threading.Lock()
 
 	# ============================================================
 	# QUICK DRAIN: drop any stray bytes left over from a previous
@@ -116,7 +163,16 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 			client_socket.setblocking(True)
 			client_socket.settimeout(timeout)
 	# =============================================
+
+	if not op_id:
+		op_id = "console"
 	
+	# initialize the merge‐response map once
+	if not hasattr(session, "merge_response_queue"):
+		session.merge_response_queue = {}
+
+	session.merge_response_queue.setdefault(op_id, queue.Queue())
+
 	try:
 		defender_state = defender.is_active
 
@@ -130,92 +186,153 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 				print(brightred + "[!] Command blocked by Session-Defender.")
 				return None
 
+	start_tok = f"__OP__{op_id}__"   if op_id else None
+	end_tok   = f"__ENDOP__{op_id}__" if op_id else None
+
+	if op_id:
+		if "windows" in os_type:
+			# for a PowerShell-style Windows shell
+			wrapped = (
+				f'Write-Output "{start_tok}"; '
+				f"{cmd}; "
+				f'Write-Output "{end_tok}"'
+			)
+		else:
+			# for a Unix/bash shell
+			wrapped = f"echo {start_tok}; {cmd}; echo {end_tok}"
+		send_cmd = wrapped
+	else:
+		send_cmd = cmd
+
+	logger.debug(brightyellow + f"SET TCP CMD TO {send_cmd}")
+
 	try:
 		try:
 			with session.lock:
-				client_socket.sendall(cmd.encode() + b"\n")
+				client_socket.sendall(send_cmd.encode() + b"\n")
 
 		except Exception as e:
 			print(brightred + f"[-] ERROR failed to send command over socket: {e}")
 		
 		with session.lock:
 			client_socket.settimeout(timeout)
-		response = b''
+		chunks = []
 		got_any = False
-		count = 0
+		attempt = 0
 
-		while True:
-			try:
-				with session.lock:
-					chunk = client_socket.recv(4096)
-
-				if not chunk:
-					break
-
-				response += chunk
-				got_any = True
-
-			except socket.timeout:
-				if portscan_active:
-					if not got_any:
-						if retries != 0 and count >= retries:
-							break
-						else:
+		def _reader(op_id, session):
+			nonlocal got_any, attempt
+			while True:
+				try:
+					with session.recv_lock:
+						data = client_socket.recv(4096)
+				except socket.timeout:
+					# if portscan_active, retry until we get any data or hit max attempts
+					if portscan_active:
+						if not got_any:
 							if retries != 0:
-								count += 1
-							
+								if retries and attempt < retries:
+									attempt += 1
+									continue
+
+								# otherwise give up on reading
+								break
 							continue
 
-					else:
-						output = response.decode(errors='ignore').strip()
-						clean = utils.normalize_output(output, cmd)
-						return clean
+						else:
+							break
 
-				if not got_any:
-					# real timeout
-					if timeoutprint is True:
-						print(brightred + f"[!] Timeout waiting for response from agent {display}")
-						return None
+					if not got_any:
+						# real timeout
+						if timeoutprint is True:
+							print(brightred + f"[!] Timeout waiting for response from agent {display}")
+							break
 
-					else:
-						return None
+						else:
+							break
 
-				# we did get *some* data, now drain whatever's left
-				# save old blocking/timeout state
-				with session.lock:
-					old_timeout = client_socket.gettimeout()
-					# switch to non-blocking
-					client_socket.setblocking(False)
-				try:
-					while True:
-						with session.lock:
-							client_socket.recv(1024 * 2000)
+				# end of stream
+				if not data:
+					break
 
-				except BlockingIOError:
-					# no more data in the OS buffer
-					pass
+				with session.recv_lock:
+					chunks.append(data)
+				got_any = True
 
-				finally:
-					# restore original state
-					with session.lock:
-						client_socket.setblocking(True)
-						client_socket.settimeout(old_timeout)
+				# stop as soon as we see both markers in the joined buffer
+				joined = b"".join(chunks)
+				if op_id and start_tok.encode() in joined and end_tok.encode() in joined:
+					break
 
-				break
+			# 6) Once we exit the loop, optionally drain any residual bytes so the
+			#    next command doesn’t accidentally read this data.
+			with session.lock:
+				old_timeout = client_socket.gettimeout()
+				client_socket.setblocking(False)
 
-		if global_tcpoutput_blocker == 1:
-			return
-
-		elif global_tcpoutput_blocker == 0:
 			try:
-				output = response.decode(errors='ignore').strip()
-				clean = utils.normalize_output(output, cmd)
+				while True:
+					with session.lock:
+						if not client_socket.recv(1024 * 2000):
+							break
+			except BlockingIOError:
+				pass
 
-			except Exception:
+			finally:
+				with session.lock:
+					client_socket.setblocking(True)
+					client_socket.settimeout(old_timeout)
+
+		sleep(0.03)
+		
+		reader = threading.Thread(target=_reader, args=(op_id, session), daemon=True)
+		reader.start()
+		reader.join()   # block until either we hit EOF/timeout policy or markers arrived
+
+		# ─── Extract and stash ─────────────────────────────────────────────────
+		# pull out our slice
+		with session.recv_lock:
+			response_bytes = b"".join(chunks)
+			response = response_bytes.decode("utf-8", errors="ignore").strip()
+
+		for other_op, q in session.merge_response_queue.items():
+			if other_op == op_id:
+				continue
+
+			for mm in re.finditer(rf"__OP__{other_op}__\s*(.*?)\s*__ENDOP__{other_op}__", response, re.DOTALL):
+				q.put(mm.group(1))
+
+		logger.debug(brightyellow + f"GOT RESPONSE {response} TYPE {type(response)}")
+
+		# ─── now pull out *your* own slice (and clear your queue if it’s fresh) ───
+		logger.debug("RUNNING RE.SEARCH")
+		logger.debug(f"VERIFIED START TOK IS {start_tok} END TOK IS {end_tok}")
+		m = re.search(rf"{re.escape(start_tok)}\s*(.*?)\s*{re.escape(end_tok)}", response, re.DOTALL)
+
+		if m:
+			my_out = m.group(1)
+			# flush any stale items from *your* queue
+			try:
+				while True:
+					session.merge_response_queue[op_id].get_nowait()
+
+			except queue.Empty:
 				pass
 
 		else:
-			pass
+			# fallback to whatever was queued for you (if anything)
+			try:
+				my_out = session.merge_response_queue[op_id].get_nowait()
+				
+			except queue.Empty:
+				logger.debug(f"No queued output for op {op_id}; empty result")
+				my_out = ""
+
+		logger.debug("ABOUT TO NORMALIZE OUTPUT")
+
+		# ─── Normalize & return ─────────────────────────────────────────────────
+		clean = utils.normalize_output(my_out.strip(), send_cmd)
+		return clean
 
 	except Exception as e:
 		return f"[!] Error: {e}"

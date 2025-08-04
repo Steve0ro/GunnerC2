@@ -5,6 +5,7 @@ from core import shell
 import os, sys, subprocess
 import ssl
 import ipaddress
+from core.listeners.listener_manager import create_listener, socket_to_listener, listeners as listener_registry
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.x509.oid import ExtensionOID
@@ -72,10 +73,8 @@ def generate_tls_context(listen_ip):
     cert_file.close()
 
     # Load into SSL context
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)
 
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    context.maximum_version = ssl.TLSVersion.TLSv1_2
     context.verify_mode = ssl.CERT_NONE
     context.load_cert_chain(certfile=cert_file.name, keyfile=key_file.name)
     return context
@@ -218,9 +217,13 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None, to_
     server_socket.listen(5)
     if is_ssl:
         utils.tls_listener_sockets[f"tls-{ip}:{port}"] = server_socket
+        listener_obj = create_listener(ip, port, "tls")
+        socket_to_listener[server_socket.fileno()] = listener_obj.id
 
     elif not is_ssl:
         utils.tcp_listener_sockets[f"tcp-{ip}:{port}"] = server_socket
+        listener_obj = create_listener(ip, port, "tcp")
+        socket_to_listener[server_socket.fileno()] = listener_obj.id
 
     else:
         print(brightred + f"[!] Unknown listener type detected!")
@@ -273,17 +276,10 @@ def start_tcp_listener(ip, port, cert_path=None, key_path=None, is_ssl=None, to_
         session_manager.register_tcp_session(sid, client_socket, is_ssl)
         session = session_manager.sessions[sid]
         transport = session.transport.upper()
+        lid = socket_to_listener.get(server_socket.fileno())
+        if lid:
+            listener_registry[lid].sessions.append(sid)
 
-        """if prompt_print == 1:
-            utils.async_note(brightgreen + f"[+] New {transport} agent: {sid}", PROMPT)
-
-        elif prompt_print == 0:
-            print(brightgreen + f"[+] New {transport} agent: {sid}")
-
-        else:
-            print(brightred + f"[!] An unknown error has ocurred!")"""
-
-        #print(brightgreen + f"\n[+] New {transport} agent: {sid}")
         set_output_context(world_wide=True)
         print(brightgreen + f"[+] New {transport} agent: {sid}")
         if print_type == "console":

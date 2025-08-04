@@ -9,7 +9,7 @@ brightgreen  = Style.BRIGHT + Fore.GREEN
 brightyellow = Style.BRIGHT + Fore.YELLOW
 brightred    = Style.BRIGHT + Fore.RED
 
-def getusers(sid, os_type, username=None, domain=None, dc_ip=None):
+def getusers(sid, os_type, username=None, domain=None, dc_ip=None, op_id="console"):
     """
     getusers [-f <username>]
     - No username: lists all SamAccountName values.
@@ -187,17 +187,17 @@ try {
 
     # Dispatch
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
 
     return out or ""
 
-def getgroups(sid, group=None, domain=None, dc_ip=None, members=None):
+def getgroups(sid, group=None, domain=None, dc_ip=None, members=None, op_id="console"):
     """
     getgroups [-f <group>] [-d <domain>] [--dc-ip <ip>]
     - No args: lists all SamAccountNames of groups.
@@ -519,10 +519,10 @@ try {
 
     # Dispatch
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -537,7 +537,7 @@ try {
         else:
             return out
 
-def getcomputers(sid, computer=None, domain=None, dc_ip=None):
+def getcomputers(sid, computer=None, domain=None, dc_ip=None, op_id="console"):
     """
     getcomputers [-n <computer>] [-d <domain>] [--dc-ip <ip>]
     - No args: lists all SamAccountNames of computer objects.
@@ -658,10 +658,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -728,7 +728,7 @@ $nb = (Resolve-DnsName -Type SRV "_ldap._tcp.dc._msdcs.$domain" | Sort-Object Pr
         return "ERROR"
 
 
-def getdomaincontrollers(sid, domain=None, dc_ip=None, enterprise=False):
+def getdomaincontrollers(sid, domain=None, dc_ip=None, enterprise=False, op_id="console"):
     """
     getdomaincontrollers [-d <domain>] [--dc-ip <ip>] [-e, --enterprise]
     - No flags: lists all DC hostnames in the current domain.
@@ -854,10 +854,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     if out:
         if "Nothing Found" in out:
@@ -869,7 +869,7 @@ try {{
         else:
             return out
 
-def getous(sid, ou=None, domain=None, dc_ip=None):
+def getous(sid, ou=None, domain=None, dc_ip=None, op_id="console"):
     sess = session_manager.sessions.get(sid)
     if not sess:
         return brightred + "[!] Invalid session"
@@ -968,10 +968,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
     
     if out:
         if "Nothing Found" in out:
@@ -984,7 +984,7 @@ try {{
             return out
 
 
-def getgpos(sid, name=None, domain=None, dc_ip=None):
+def getgpos(sid, name=None, domain=None, dc_ip=None, op_id="console"):
     """
     getgpos [-n <name>] [-d <domain>] [--dc-ip <ip>]
     - No args: lists all GPO DisplayNames.
@@ -1099,10 +1099,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1118,7 +1118,7 @@ try {{
         else:
             return out
 
-def getdomain(sid, domain=None, dc_ip=None):
+def getdomain(sid, domain=None, dc_ip=None, op_id="console"):
     sess = session_manager.sessions.get(sid)
     if not sess:
         return brightred + "[!] Invalid session"
@@ -1177,10 +1177,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     if out:
         if "Nothing Found" in out:
@@ -1192,7 +1192,7 @@ try {{
         else:
             return out
 
-def gettrusts(sid, domain=None, dc_ip=None, name=None):
+def gettrusts(sid, domain=None, dc_ip=None, name=None, op_id="console"):
     """
     gettrusts [-d <domain>] [--dc-ip <ip>]
     - No flags: lists all trust relationships for the current domain.
@@ -1330,10 +1330,10 @@ try {{
 
     # dispatch to the agent
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1349,7 +1349,7 @@ try {{
         else:
             return out
 
-def getforest(sid, name=None, domain=None, dc_ip=None):
+def getforest(sid, name=None, domain=None, dc_ip=None, op_id="console"):
     """
     getforest [-n <name>] [-d <domain>] [--dc-ip <ip>]
     - No -n: lists all trusted-forest DNS names.
@@ -1466,10 +1466,10 @@ if (-not $found) {{ Write-Output "Nothing Found" }}
         f".GetString([Convert]::FromBase64String(\"{b64}\")); Invoke-Expression $ps"
     )
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1484,7 +1484,7 @@ if (-not $found) {{ Write-Output "Nothing Found" }}
         else:
             return out
 
-def getfsmo(sid, domain=None, dc_ip=None):
+def getfsmo(sid, domain=None, dc_ip=None, op_id="console"):
     """
     getfsmo [-d <domain>] [--dc-ip <ip>]
     - No flags: shows the forest‑level FSMO role holders (SchemaMaster, DomainNamingMaster).
@@ -1588,10 +1588,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1606,7 +1606,7 @@ try {{
         else:
             return out
 
-def getdomainpolicy(sid, domain=None, dc_ip=None):
+def getdomainpolicy(sid, domain=None, dc_ip=None, op_id="console"):
     """
     getdomainpolicy [-d <domain>] [--dc-ip <ip>]
     - No flags: dumps the current domain’s PasswordPolicy, LockoutPolicy and KerberosPolicy.
@@ -1726,10 +1726,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1744,7 +1744,7 @@ try {{
         else:
             return out
 
-def getdelegation(sid, domain=None, dc_ip=None):
+def getdelegation(sid, domain=None, dc_ip=None, op_id="console"):
     """
     getdelegation [-d <domain>] [--dc-ip <ip>]
     List all objects (users, computers, service accounts) with unconstrained
@@ -1851,10 +1851,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
     
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -1869,7 +1869,7 @@ try {{
         else:
             return out
 
-def getadmins(sid, domain=None, dc_ip=None):
+def getadmins(sid, domain=None, dc_ip=None, op_id="console"):
     """
     getadmins [-d <domain>] [--dc-ip <ip>]
     - No flags: list members of "Domain Admins" and "Enterprise Admins" in the current domain.
@@ -1996,10 +1996,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -2014,7 +2014,7 @@ try {{
         else:
             return out
 
-def getspns(sid, domain=None, dc_ip=None, hashes=None):
+def getspns(sid, domain=None, dc_ip=None, hashes=None, op_id="console"):
     """
     getspns [-d <domain>] [--dc-ip <ip>]
     - No flags: lists every account (user or computer) that has one or more SPNs.
@@ -2099,10 +2099,10 @@ try {{
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -2118,7 +2118,7 @@ try {{
             out = out.replace("\\", "").replace("\\\\", "").replace("\\\\\\\\", "")
             return out
 
-def kerbrute_bruteforce(sid, user=None, password=None, domain=None, dc_ip=None, credfile=None):
+def kerbrute_bruteforce(sid, user=None, password=None, domain=None, dc_ip=None, credfile=None, op_id="console"):
     """
     kerbrute bruteforce -u <user|userfile> -p <pass|passfile> -d <domain> [--dc‑ip <ip>] [-C <credfile>]
     -u: single user or file of users (comma‑list OK)
@@ -2242,10 +2242,10 @@ if (-not $found) {{ Write-Output "Nothing Found" }}
     )
 
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"
@@ -2257,7 +2257,7 @@ if (-not $found) {{ Write-Output "Nothing Found" }}
         else:
             return out
 
-def kerbrute_userenum(sid, domain=None, dc_ip=None, user=None):
+def kerbrute_userenum(sid, domain=None, dc_ip=None, user=None, op_id="console"):
     """
     kerbrute userenum -d <domain> [--dc‑ip <ip>] -u <user|userfile|user1,user2>
     -d: target AD domain (FQDN)
@@ -2349,10 +2349,10 @@ foreach ($u in $users) {{
     )
     
     if transport in ("http", "https"):
-        out = shell.run_command_http(sid, one_liner)
+        out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
     elif transport in ("tcp", "tls"):
-        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+        out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
     else:
         return brightred + "[!] Unknown session transport!"

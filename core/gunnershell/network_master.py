@@ -9,6 +9,7 @@ import threading, socketserver, socket
 from core.session_handlers import session_manager
 from core import shell
 from core.listeners import tcp_listener
+from core import print_override
 import _thread
 import base64
 import queue
@@ -22,7 +23,7 @@ brightcyan  = Style.BRIGHT + Fore.CYAN
 reset = Style.RESET_ALL
 reverse_sock = None
 
-def netstat(sid, os_type):
+def netstat(sid, os_type, op_id="console"):
 	"""
 	Show network connections on the remote host, very similar to Meterpreter's 'netstat'.
 
@@ -50,16 +51,16 @@ def netstat(sid, os_type):
 	# dispatch over HTTP(S) or TCP/TLS
 	transport = sess.transport.lower()
 	if transport in ("http", "https"):
-		out = shell.run_command_http(sid, cmd)
+		out = shell.run_command_http(sid, cmd, op_id=op_id)
 
 	else:
-		out = shell.run_command_tcp(sid, cmd, timeout=5, portscan_active=True)
+		out = shell.run_command_tcp(sid, cmd, timeout=5, portscan_active=True, op_id=op_id)
 
 	# ensure we at least return an empty string
 	return out or None
 
 # stubs for the other Meterpreter-style cmds you mentioned
-def arp(sid, os_type):
+def arp(sid, os_type, op_id="console"):
 	"""
 	Display the host ARP cache.
 	"""
@@ -75,12 +76,12 @@ def arp(sid, os_type):
 		return brightred + f"[!] No such session: {display}"
 
 	if sess.transport.lower() in ("http","https"):
-		return shell.run_command_http(sid, cmd) or None
+		return shell.run_command_http(sid, cmd, op_id=op_id) or None
 
 	else:
-		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
+		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id) or None
 
-def ipconfig(sid, os_type):
+def ipconfig(sid, os_type, op_id="console"):
 	"""
 	Display network interfaces on the remote host:
 	  - Windows: ipconfig /all
@@ -100,12 +101,12 @@ def ipconfig(sid, os_type):
 
 	# dispatch over HTTP(S) or TCP/TLS, with a slightly longer timeout on Windows
 	if sess.transport.lower() in ("http", "https"):
-		return shell.run_command_http(sid, cmd) or None
+		return shell.run_command_http(sid, cmd, op_id=op_id) or None
 	else:
 		timeout = 0.5 if "windows" in os_type else 0.5
-		return shell.run_command_tcp(sid, cmd, timeout=timeout, portscan_active=True) or None
+		return shell.run_command_tcp(sid, cmd, timeout=timeout, portscan_active=True, op_id=op_id) or None
 
-def resolve(sid, os_type, hostname):
+def resolve(sid, os_type, hostname, op_id="console"):
 	"""
 	Resolve a DNS name on the target.
 	"""
@@ -120,12 +121,12 @@ def resolve(sid, os_type, hostname):
 		return brightred + f"[!] No such session: {display}"
 
 	if sess.transport.lower() in ("http","https"):
-		return shell.run_command_http(sid, cmd) or None
+		return shell.run_command_http(sid, cmd, op_id=op_id) or None
 
 	else:
-		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
+		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id) or None
 
-def route(sid, os_type):
+def route(sid, os_type, op_id="console"):
 	"""
 	View the routing table.
 	"""
@@ -140,12 +141,12 @@ def route(sid, os_type):
 		return brightred + f"[!] No such session: {display}"
 
 	if sess.transport.lower() in ("http","https"):
-		return shell.run_command_http(sid, cmd) or None
+		return shell.run_command_http(sid, cmd, op_id=op_id) or None
 
 	else:
-		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True) or None
+		return shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id) or None
 
-def getproxy(sid, os_type):
+def getproxy(sid, os_type, op_id="console"):
 	"""
 	Display the current proxy configuration on the remote host.
 	- Windows:  netsh winhttp show proxy
@@ -164,10 +165,10 @@ def getproxy(sid, os_type):
 		return brightred + f"[!] No such session: {display}"
 
 	if sess.transport.lower() in ("http", "https"):
-		return shell.run_command_http(sid, cmd) or None
+		return shell.run_command_http(sid, cmd, op_id=op_id) or None
 	else:
 		# give a bit longer in case env takes a moment
-		return shell.run_command_tcp(sid, cmd, timeout=1, portscan_active=True) or None
+		return shell.run_command_tcp(sid, cmd, timeout=1, portscan_active=True, op_id=op_id) or None
 
 
 COMMON_PORTS_ps1 = """@"
@@ -241,7 +242,7 @@ BATCH_SIZE = 50
 PORT_BATCHES = list(chunked(ALL_PORTS, BATCH_SIZE))
 spinner = cycle(["|", "/", "-", "\\"])
 
-def check_target_arp(sid, runner, gw, target):
+def check_target_arp(sid, runner, gw, target, op_id):
 	sess    = session_manager.sessions.get(sid)
 	transport = getattr(sess, "transport", None).lower()
 	# one-time PS to prime gateway ARP and look for the target’s MAC
@@ -260,10 +261,10 @@ if ($t) {{ Write-Output "ARP_OK" }}"""
 		)
 
 	if transport in ("tcp", "tls"):
-		out = shell.run_command_tcp(sid, check_cmd, timeout=1, portscan_active=True)
+		out = shell.run_command_tcp(sid, check_cmd, timeout=1, portscan_active=True, op_id=op_id)
 
 	elif transport in ("http", "https"):
-		out = shell.run_command_http(sid, check_cmd)
+		out = shell.run_command_http(sid, check_cmd, op_id=op_id)
 
 	else:
 		print(brightred + f"[!] Unknown transport!")
@@ -275,7 +276,7 @@ if ($t) {{ Write-Output "ARP_OK" }}"""
 		return "NO"
 
 
-def portscan(sid, os_type, target, skip_ping=False, port_spec=None):
+def portscan(sid, os_type, target, skip_ping=False, port_spec=None, op_id="console"):
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 	sess    = session_manager.sessions.get(sid)
 
@@ -319,10 +320,10 @@ def portscan(sid, os_type, target, skip_ping=False, port_spec=None):
 					"Invoke-Expression $ps"
 					)
 				if transport in ("tcp", "tls"):
-					pong = shell.run_command_tcp(sid, check_cmd, timeout=2, portscan_active=True)
+					pong = shell.run_command_tcp(sid, check_cmd, timeout=2, portscan_active=True, op_id=op_id)
 
 				elif transport in ("http", "https"):
-					pong = shell.run_command_http(sid, check_cmd)
+					pong = shell.run_command_http(sid, check_cmd, op_id=op_id)
 
 				else:
 					print(brightred + f"[!] Unknown transport!")
@@ -344,22 +345,22 @@ def portscan(sid, os_type, target, skip_ping=False, port_spec=None):
 			)
 
 		if transport in ("http", "https"):
-			gw = shell.run_command_http(sid, gw_cmd)
+			gw = shell.run_command_http(sid, gw_cmd, op_id=op_id)
 
 		elif transport in ("tcp", "tls"):
-			gw = shell.run_command_tcp(sid, gw_cmd, timeout=0.5, portscan_active=True)
+			gw = shell.run_command_tcp(sid, gw_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 		
 		else:
 			print(brightred + f"[!] Unknown transport!")
 
 
 		for ip in hosts[:]:
-			sys.stdout.write(brightyellow + f"\rDiscovering Hosts [{next(spinner)}]")
-			sys.stdout.flush()
+			print(brightyellow + f"\rDiscovering Hosts [{next(spinner)}]", end="", flush=True)
+			#sys.stdout.flush()
 
 			arp_ok = False
 
-			arp_out = check_target_arp(sid, runner, gw, ip)
+			arp_out = check_target_arp(sid, runner, gw, ip, op_id)
 			if "OK" in arp_out:
 				arp_ok = True
 
@@ -369,8 +370,8 @@ def portscan(sid, os_type, target, skip_ping=False, port_spec=None):
 				continue
 
 			# clear that whole line
-			sys.stdout.write("\r" + " " * 80 + "\r")
-			sys.stdout.flush()
+			print("\r" + " " * 80 + "\r", end="", flush=True)
+			#sys.stdout.flush()
 
 			if not arp_ok:
 				# skip this host
@@ -451,10 +452,10 @@ if (-not $gw) {{
 				)
 
 				if transport in ("tcp", "tls"):
-					out = shell.run_command_tcp(sid, ps_cmd, timeout=0.2, portscan_active=True)
+					out = shell.run_command_tcp(sid, ps_cmd, timeout=0.2, portscan_active=True, op_id=op_id)
 
 				elif transport in ("http", "https"):
-					out = shell.run_command_http(sid, ps_cmd)
+					out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
 
 				else:
 					print(brightred + f"[!] Unknown transport!")
@@ -473,21 +474,21 @@ if (-not $gw) {{
 				barlen = 20
 				filled = int(barlen * pct / 100)
 				bar = "#" * filled + "-" * (barlen - filled)
-				sys.stdout.write(brightyellow + f"\rScanning [{bar}] {pct:3d}% {bidx}/{nbatch} ⟶ {ip}")
-				sys.stdout.flush()
+				print(brightyellow + f"\rScanning [{bar}] {pct:3d}% {bidx}/{nbatch} ⟶ {ip}", end="", flush=True)
+				#sys.stdout.flush()
 
 			#sys.stdout.write("\n")
-			sys.stdout.write("\r" + " " * 80 + "\r")
-			sys.stdout.flush()
+			print("\r" + " " * 80 + "\r", end="", flush=True)
+			#sys.stdout.flush()
 			results[ip] = sorted(set(ports))
 
 		for _ in range(DYNAMIC_LINES):
 			# move cursor up one line
-			sys.stdout.write(f"{ESC}1A")
+			print(f"{ESC}1A", end="")
 			# erase entire line
-			sys.stdout.write(f"{ESC}2K")
+			print(f"{ESC}2K", end="")
 
-		sys.stdout.flush()
+		print_override._orig_print("", end="", flush=True)
 
 		output = []
 		for host, ports in results.items():
@@ -677,7 +678,7 @@ def server(proxy_port, handler_port):
 
 
 # --- GunnerShell command ---
-def socks_proxy(sid, local_host, socks_port, local_port):
+def socks_proxy(sid, local_host, socks_port, local_port, op_id="console"):
 	"""
 	Spins up reverse SOCKS:
 	  1) TLS handler on handler_port (self-signed)
@@ -887,17 +888,17 @@ Write-Host "SOCKS proxy running in background runspace."
 	transport = session.transport.lower()
 
 	if transport in ('tcp', 'tls'):
-		shell.run_command_tcp(sid, ps_cmd, timeout=5, defender_bypass=True)
+		shell.run_command_tcp(sid, ps_cmd, timeout=5, defender_bypass=True, op_id=op_id)
 
 	elif transport in ('http', 'https'):
-		shell.run_command_http(sid, ps_cmd, defender_bypass=True, output=False)
+		shell.run_command_http(sid, ps_cmd, defender_bypass=True, output=False, op_id=op_id)
 	else:
 		print(brightred + "Unsupported transport for socks_proxy")
 
 	#print(brightgreen + f"[+] Agent listening on 0.0.0.0:{remote_port} via proxy {local_port}")
 
 
-def hostname(sid, os_type):
+def hostname(sid, os_type, op_id="console"):
 	"""
 	Display the remote host's hostname.
 	"""
@@ -915,10 +916,10 @@ def hostname(sid, os_type):
 
 	transport = sess.transport.lower()
 	if transport in ("http", "https"):
-		out = shell.run_command_http(sid, cmd)
+		out = shell.run_command_http(sid, cmd, op_id=op_id)
 	
 	elif transport in ("tcp", "tls"):
-		out =  shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True)
+		out =  shell.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
 	else:
 		return brightred + "[!] Unknown session transport!"

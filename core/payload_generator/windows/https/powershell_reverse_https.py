@@ -103,7 +103,7 @@ def make_raw(ip, port, beacon_interval, headers, useragent, accept, byte_range, 
     return raw
 
 
-def generate_windows_powershell_https(ip, port, obs, beacon_interval, headers, useragent, accept, byte_range, jitter=0, no_child=None):
+def generate_windows_powershell_https(ip, port, obs, beacon_interval, headers, useragent, accept, byte_range, jitter=0, no_child=None, profile=None):
     if obs is None or obs == 0:
     	payload = make_raw(ip, port, beacon_interval, headers, useragent, accept=accept, byte_range=byte_range, jitter=jitter)
     	cmd = payutils.encode_win_payload(payload, no_child)

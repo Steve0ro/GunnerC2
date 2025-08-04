@@ -2,13 +2,14 @@ import ssl
 import threading
 from http.server import HTTPServer
 from socketserver import ThreadingMixIn
+import os, sys, subprocess
 from core.listeners.http_handler import C2HTTPRequestHandler, generate_http_session_id
 from core.listeners.tcp_listener import generate_tls_context
 from core.prompt_manager import prompt_manager
+from core.listeners.listener_manager import create_listener, socket_to_listener
 from core.print_override import set_output_context
 from core import utils
 from colorama import init, Fore, Style
-import os, sys, subprocess
 
 brightgreen  = Style.BRIGHT + Fore.GREEN
 brightyellow = Style.BRIGHT + Fore.YELLOW
@@ -32,6 +33,8 @@ def start_https_listener(ip: str, port: int, certfile: str = None, keyfile: str 
         # Create the HTTP server
         httpd = ThreadingHTTPServer((ip, port), C2HTTPRequestHandler)
         utils.https_listener_sockets[f"https-{ip}:{port}"] = httpd
+        listener_obj = create_listener(ip, port, "https")
+        socket_to_listener[ httpd.socket.fileno() ] = listener_obj.id
 
         httpd.scheme = "https"
 

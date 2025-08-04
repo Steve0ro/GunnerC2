@@ -1,10 +1,13 @@
 import random
+import builtins
 import string
 import os, sys, subprocess
 import readline
+import logging
 from core.session_handlers import session_manager, sessions
 from core.teamserver import operator_manager as op_manage
 from core.prompt_manager import prompt_manager
+from core import print_override
 import re
 import readline
 import base64
@@ -21,6 +24,8 @@ tls_listener_sockets = {}
 http_listener_sockets = {}
 https_listener_sockets = {}
 portforwards = {}
+
+logger = logging.getLogger(__name__)
 
 class SessionDefender:
 	def __init__(self):
@@ -118,10 +123,18 @@ def normalize_output(raw: str, last_cmd: str) -> str:
 	return "\n".join(cleaned).strip()
 
 def echo(msg: str, to_console, to_op, world_wide, color=False, _raw_printer=print, end="\n"):
+	#print_override.set_output_context(to_console=to_console, to_op=to_op, world_wide=world_wide)
+	logger.debug(
+        "ENTER echo: msg=%r, to_console=%r, to_op=%r, world_wide=%r, color=%r, end=%r",
+        msg, to_console, to_op, world_wide, color, end
+    )
+
 	notcmd = False
 	no_raw_print = False
 	if world_wide:
+		logger.debug("world_wide path: broadcasting to all operators")
 		for ident, obj in op_manage.operators.items():
+			logger.debug(" → operator %s: handler=%r", ident, op.handler)
 			sock = obj.handler
 			queue = obj.op_queue
 
@@ -129,27 +142,37 @@ def echo(msg: str, to_console, to_op, world_wide, color=False, _raw_printer=prin
 				msg = color + msg
 
 			if sock:
-				sock.send((msg + end).encode())
+				try:
+					sock.send((msg + end).encode())
+					logger.debug("   sent to operator %s", ident)
+
+				except Exception as e:
+					logger.exception("   error sending to operator %s: %s", ident, e)
 
 		if "gunneroperatoralert{(::)}" in msg.lower():
 			no_raw_print = True
+			logger.debug("   suppressing local raw_print due to operator-alert/kick")
 
 		elif "gunneroperatorkick{(::)}" in msg.lower():
 			no_raw_print = True
+			logger.debug("   suppressing local raw_print due to operator-alert/kick")
 
 		if not color and not no_raw_print:
 			_raw_printer("\n" + msg, end=end)
 
 		elif not no_raw_print:
+			logger.debug("   raw_printing: %r", msg)
 			_raw_printer("\n" + color + msg, end=end)
 
 		for keyword in ("new tcp agent", "new tls agent", "new http agent", "new https agent"):
 			if keyword in msg.lower():
 				notcmd = True
+				logger.debug("   detected keyword %r → will redraw prompt", keyword)
 				break
 
 		if notcmd:
 			prompt = prompt_manager.get_prompt()
+			logger.debug("   redrawing prompt %r", prompt)
 			sys.stdout.write(prompt)
 			readline.redisplay()
 			sys.stdout.flush()
@@ -158,6 +181,7 @@ def echo(msg: str, to_console, to_op, world_wide, color=False, _raw_printer=prin
 
 
 	elif to_console:
+		logger.debug("to_console path")
 		if not color:
 			_raw_printer(msg, end=end)
 
@@ -178,6 +202,8 @@ def echo(msg: str, to_console, to_op, world_wide, color=False, _raw_printer=prin
 		notcmd = False
 			
 	elif to_op:
+		#logger.debug("SELECTED OPERATOR ELIF PATH")
+		logger.debug("to_op path, target operator=%r", to_op)
 		operator = op_manage.operators[to_op]
 		sock = operator.handler
 		queue = operator.op_queue
@@ -185,11 +211,19 @@ def echo(msg: str, to_console, to_op, world_wide, color=False, _raw_printer=prin
 		if color:
 			msg = color + msg
 
+		#logger.debug("SENDING TO OPERATOR OVER SOCKET")
 		if sock:
+			logger.debug("   sending to operator socket: %r", sock)
 			try:
-				sock.send((msg + end).encode())
-			except BrokenPipeError:
+				sock.sendall((msg + end).encode())
+				logger.debug("   sendall succeeded")
+
+			except BrokenPipeError as e:
+				logger.debug(f"HIT BROKEN PIPE ERROR IN ECHO FUNC: {e}")
 				op_manage.operators[to_op].pop()
+
+			except Exception as e:
+				logger.debug(f"HIT RANDOM EXCEPTION IN ECHO FUNC SENDING TO OP: {e}")
 
 
 def list_sessions():
@@ -259,6 +293,18 @@ def shutdown():
 
 	except Exception:
 		pass
+
+	try:
+		for name, sock in tls_listener_sockets.items():
+			try:
+				sock.close()
+				print(brightyellow + f"Closed TLS {name}")
+
+			except:
+				pass
+
+	except Exception:
+		pass	
 
 	try:
 		for name, httpd in http_listener_sockets.items():
@@ -375,9 +421,11 @@ commands = commands
 # -----------------------------------------------------------------------------
 gunnershell_commands = gunnershell_commands
 
-def print_gunnershell_help(cmd: str=None):
+def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None):
 	"""Like print_help, but grouped and with two‐level detail."""
 	# 1) Top‐level: show grouped summary
+	#builtins.print = print_override._orig_print
+	print_override.set_output_context(to_console=to_console, to_op=op_id, world_wide=False)
 	if cmd is None:
 		core_cmds = {
 			"help":                     "Help menu",
@@ -395,6 +443,7 @@ def print_gunnershell_help(cmd: str=None):
 		fs_cmds = {
 			"ls":                       "List files on the remote host",
 			"cat":                      "Print contents of a file",
+			"type":                     "Alias for cat",
 			"cd":                       "Change remote working directory",
 			"pwd":                      "Print remote working directory",
 			"cp":                       "Copy file from source → destination",

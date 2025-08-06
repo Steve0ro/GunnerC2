@@ -32,12 +32,13 @@ from time import sleep
 import datetime
 import requests
 import uuid
+import pkgutil
+import importlib
 from core import help_menus
 
 from core.module_loader import load_module
 from core.module_loader import search_modules, discover_module_files
 from core import shell, utils, banner, portfwd
-from core.listeners import tcp_listener, https_listener, http_handler
 from core.session_handlers import session_manager, sessions
 from core.teamserver import operator_manager as op_manage
 from core.teamserver import auth_manager as auth
@@ -55,6 +56,11 @@ from core.prompt_manager import prompt_manager
 
 from core.command_execution import http_command_execution as http_exec
 from core.command_execution import tcp_command_execution as tcp_exec
+
+# Listener Imports
+
+from core.listeners.base import load_listeners, LISTENER_CLASSES, create_listener, stop_listener
+from core.listeners import tcp_listener, https_listener, http_handler
 
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -527,19 +533,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				utils.print_help("start https", False)
 				return
 
-			if to_console:
-				threading.Thread(
-					target=https_listener.start_https_listener,
-					args=(parsed.ip, parsed.port, parsed.certfile, parsed.keyfile, True, to_op),
-					daemon=True
-				).start()
-
-			else:
-				threading.Thread(
-					target=https_listener.start_https_listener,
-					args=(parsed.ip, parsed.port, parsed.certfile, parsed.keyfile, False, to_op),
-					daemon=True
-				).start()
+			threading.Thread(target=create_listener, args=(parsed.ip, parsed.port, "https", to_console, to_op, None), daemon=True).start()
+			return
 
 		except Exception:
 			utils.print_help("start https", False)
@@ -572,14 +567,10 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 		else:
 			profile = None
 
-		if to_console:
-			threading.Thread(target=http_handler.start_http_listener, args=(ip, port, True, to_op, profile), daemon=True).start()
-
-		else:
-			threading.Thread(target=http_handler.start_http_listener, args=(ip, port, False, to_op, profile), daemon=True).start()
+		threading.Thread(target=create_listener, args=(parsed.ip, parsed.port, "http", to_console, to_op, None), daemon=True).start()
+		return
 
 	elif user.startswith("start tls"):
-		# shorthand for "start tcp … --ssl"
 		try:
 			parts = shlex.split(user)
 			parser = SilentParser(prog="start tls", add_help=False)
@@ -596,21 +587,9 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			return
 
 		# call the exact same TCP listener, but force SSL on
-		if to_console:
-			threading.Thread(
-				target=tcp_listener.start_tcp_listener,
-				args=(parsed.ip, parsed.port, parsed.certfile, parsed.keyfile, True, True, to_op),
-				daemon=True
-			).start()
-			return
-
-		else:
-			threading.Thread(
-				target=tcp_listener.start_tcp_listener,
-				args=(parsed.ip, parsed.port, parsed.certfile, parsed.keyfile, True, False, to_op),
-				daemon=True
-			).start()
-			return
+		
+		threading.Thread(target=create_listener, args=(parsed.ip, parsed.port, "tls", to_console, to_op, None), daemon=True).start()
+		return
 
 	elif user.startswith("start tcp"):
 		try:
@@ -667,19 +646,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			except Exception as e:
 				print(brightred + f"\n[-] ERROR failed to parse arguments: {e}")
 
-			if to_console:
-				threading.Thread(
-					target=tcp_listener.start_tcp_listener,
-					args=(ip, port, certfile, keyfile, is_ssl, True, to_op),
-					daemon=True
-				).start()
-
-			else:
-				threading.Thread(
-					target=tcp_listener.start_tcp_listener,
-					args=(ip, port, certfile, keyfile, is_ssl, False, to_op),
-					daemon=True
-				).start()
+			threading.Thread(target=create_listener, args=(parsed.ip, parsed.port, "tcp", to_console, to_op, None), daemon=True).start()
+			return
 
 		except Exception:
 			utils.print_help("start tcp", False)
@@ -1702,9 +1670,23 @@ def teamserver():
 		print(brightred + "Teamserver failed to start, delete ~/.gunnerc2/operators.db")
 		return "KILL"
 
+def listener_load():
+	try:
+		load_listeners()
+		return True
+
+	except Exception:
+		logger.exception("Failed to load listener plugins")
+		return False
+
 
 if __name__ == "__main__":
 	print_banner()
+	listen = listener_load()
+	if not listen:
+		print(brightred + f"Failed to load listener library, exiting...")
+		sys.exit(1)	
+
 	logger.debug("=== starting teamserver ===")
 	teamsrv_startup = teamserver()
 	if teamsrv_startup == "KILL":
@@ -1744,60 +1726,6 @@ if __name__ == "__main__":
 							args=(operator, line),
 							daemon=True
 						).start()
-						"""logger.debug(f"GUNNERSHELL OBJ: {operator.gs}")
-						logger.debug(f"OPERATOR HANDLE: {operator.handler}")
-						logger.debug(f"OPERATOR SHELL TYPE: {shell_type}")
-						#ret = operator.gs.loop(cmd=line, to_console=False, op_id=operator.op_id)
-						logger.debug("→ dispatching to GunnerShell for %s", op_id)
-						ret = operator.gs.loop(cmd=line, to_console=False, op_id=operator.op_id)
-						logger.debug("   interact() returned: %r", ret)
-						
-
-						if not ret:
-							logger.debug("   no return value (empty), skipping")
-							continue
-
-
-						if ret == "exit":
-							logger.debug("   GunnerShell requested exit, switching back to main")
-							operator.shell = "main"
-							operator.gs    = None
-
-						if ret:
-							if "SIDSWITCH" in ret:
-								logger.debug("   SIDSWITCH detected: %r", ret)
-								parts = ret.split(maxsplit=1)
-								if len(parts) != 2:
-									# malformed return, drop back to main
-									logger.warning("   malformed SIDSWITCH %r", ret)
-									operator.shell = "main"
-									operator.gs = None
-									continue
-
-								new_sid = parts[1]
-								logger.debug("   new SID = %s", new_sid)
-								print(f"GUNNERSHELLSID: {new_sid}")
-
-								try:
-									operator.gs = Gunnershell(new_sid, operator.op_id)
-									operator.shell = "gunnershell"
-									logger.debug("   spawned new GunnerShell object for %s", new_sid)
-
-								except Exception as e:
-									logger.exception("   error creating new GunnerShell for %s", new_sid)
-									print(brightred + f"ERROR: {e}")
-									continue
-							else:
-								from core import utils
-								set_output_context(to_console=False, to_op=op_id)
-								logger.debug("   dispatching output to main via echo: %r", ret)
-								#set_output_context(to_console=False, to_op=op_id, world_wide=False)
-								utils.echo(ret, False, op_id, world_wide=False)
-								#operator.handler.sendall((ret + "\n").encode())
-							
-
-						else:
-							logger.debug("   no output returned from interact()")"""
 		
 					else:
 						logger.debug("→ dispatching to main shell for %s: %r", op_id, line)

@@ -10,7 +10,7 @@ import os
 import sys
 from typing import Any, Dict, Tuple, Optional, Union
 from dataclasses import dataclass
-from core.listeners.listener_manager import listeners, Listener
+from core.listeners.base import listeners, Listener
 
 class MalleableProfile:
     def __init__(self, name: str, blocks: Dict[str, Any]):

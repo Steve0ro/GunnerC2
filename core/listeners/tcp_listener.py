@@ -5,7 +5,7 @@ from core import shell
 import os, sys, subprocess
 import ssl
 import ipaddress
-from core.listeners.listener_manager import create_listener, socket_to_listener, listeners as listener_registry
+from core.listeners.base import create_listener, socket_to_listener, listeners as listener_registry
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.x509.oid import ExtensionOID

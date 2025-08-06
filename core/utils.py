@@ -45,11 +45,17 @@ class SessionDefender:
 			"less", "more", "nano", "pico", "vi", "vim", "gedit", "atom", "emacs", "telnet"
 		} | self.win_dangerous
 
-		# regexes for unclosed quotes/backticks
-		self._pairings = [
-			(r"(?<!\\)'", r"'"),
-			(r'(?<!\\)"', r'"'),
-			(r"(?<!\\)`", r"`"),
+		# regexes for unclosed quotes/backticks on Linux (backslash escapes)
+		self._linux_pairings = [
+			(r"(?<!\\)'", "'"),
+			(r'(?<!\\)"', '"'),
+			(r"(?<!\\)`", "`"),
+		]
+		# regexes for unclosed quotes on Windows (backtick escapes)
+		self._win_pairings = [
+			(r"(?<!`)'",  "'"),
+			(r'(?<!`)"',  '"'),
+			# we drop the backtick‐pairing on Windows to avoid confusion
 		]
 
 	def inspect_command(self, os_type: str, cmd: str) -> bool:
@@ -64,12 +70,21 @@ class SessionDefender:
 			return True
 
 		# 1) Unclosed quotes/backticks
-		for pattern, char in self._pairings:
-			if len(re.findall(pattern, cmd)) % 2 != 0:
+		if os_type == "windows":
+			pairings = self._win_pairings
+			
+		else:
+			pairings = self._linux_pairings
+
+		for pattern, char in pairings:
+			count = len(re.findall(pattern, cmd))
+			if count % 2 != 0:
+				logger.debug(f"Blocked command {cmd!r} for unclosed {char}s (found {count})")
 				return False
 
 		# 2) Trailing backslash (Linux only)
 		if os_type == "linux" and cmd.rstrip().endswith("\\"):
+			logger.debug(brightred + f"Blocked command {cmd} on linux agent for ending in a backslash")
 			return False
 
 		# 3) Dangerous binaries

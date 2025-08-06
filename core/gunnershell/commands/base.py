@@ -48,9 +48,6 @@ class Command(ABC):
 		every Command subclass implements a `logic`.
 		"""
 
-
-# registry mapping command name (str) → Command subclass
-#COMMANDS: dict[str, type] = {}
 COMMANDS: dict = {}
 
 def register(*names: str):
@@ -91,22 +88,6 @@ def get(parts: list[str]):
             # optional: handle default for a multi‐command group
             match = node["__default__"]
     return match, consumed
-
-"""def register(*name: str):
-	'''
-	Decorator to register a Command subclass under `name`.
-	'''
-	def deco(cls):
-		for n in name:
-			COMMANDS[n] = cls
-		return cls
-	return deco
-
-def get(name: str):
-	'''
-	Return the Command class registered under `name`, or None.
-	'''
-	return COMMANDS.get(name)"""
 
 def list_commands() -> list[str]:
 	"""

@@ -21,6 +21,7 @@ class Session:
         self.merge_response_queue: Dict[str, queue.Queue] = {}
         self.lock = threading.Lock()
         self.recv_lock = threading.Lock()
+        self.exec_lock = threading.Lock()
         self.command_queue = queue.Queue()
         self.output_queue = queue.Queue()
         self.meta_command_queue = queue.Queue()

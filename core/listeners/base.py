@@ -8,6 +8,8 @@ import logging
 
 log = logging.getLogger(__name__)
 
+_reg_lock = threading.RLock()
+
 class Listener(ABC):
 	"""
 	Abstract base: subclass and implement run_loop().
@@ -63,7 +65,8 @@ def create_listener(ip: str, port: int, transport: str, to_console: bool=True, o
 	# Instantiate the concrete listener
 	inst = cls(ip=ip, port=port, transport=transport, to_console=to_console, op_id=op_id, listener_id=lid, profiles=profiles)
 	# Store & spin up its thread
-	listeners[lid] = inst
+	with _reg_lock:
+		listeners[lid] = inst
 	inst.start(ip, port)
 	return inst
  

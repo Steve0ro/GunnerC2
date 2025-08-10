@@ -369,13 +369,13 @@ Usage:
 	"getdomaincontrollers": """
 getdomaincontrollers [-d <domain>] [--dc-ip <ip>] [-e, --enterprise]
 
-  -d, --domain       AD domain name (FQDN) or NetBIOS
-  --dc-ip            IP address of the Domain Controller
-  -e, --enterprise   Enumerate DCs across the entire forest
+	-d, --domain       AD domain name (FQDN) or NetBIOS
+	--dc-ip            IP address of the Domain Controller
+	-e, --enterprise   Enumerate DCs across the entire forest
 
 Usage:
-  getdomaincontrollers
-  List every DC in the current domain.
+	getdomaincontrollers
+	List every DC in the current domain.
 
 	getdomaincontrollers -d corp.local
 			List DCs in corp.local.
@@ -553,8 +553,8 @@ Usage:
 	"kerbrute": {
 	"_desc": """kerbrute <subcommand>
 Subcommands:
-  bruteforce  Bruteforce AD creds via Kerberos (Negotiate)
-  userenum    Enumerate valid usernames via Kerberos (Negotiate)
+	bruteforce  Bruteforce AD creds via Kerberos (Negotiate)
+	userenum    Enumerate valid usernames via Kerberos (Negotiate)
 Usage: help kerbrute <subcommand>""",
 	
 	"bruteforce": """kerbrute bruteforce -u <user|file> -p <pass|file> -d <domain> [--dc-ip <ip>] [-C <credfile>]
@@ -642,12 +642,12 @@ Example:
 List connected operator consoles or persistent operator accounts.
 
 optional arguments:
-  -h, --help
-                        show this help message and exit
-  -n NAME, --name NAME
-                        Operator ID or alias (supports wildcards)
-  --users, --hackers, --players
-                        List all persistent operator accounts (from DB)
+	-h, --help
+												show this help message and exit
+	-n NAME, --name NAME
+												Operator ID or alias (supports wildcards)
+	--users, --hackers, --players
+												List all persistent operator accounts (from DB)
  """,
 	"listeners": """listeners\nLists all currently running HTTP, HTTPS, and TCP listeners.""",
 	"addop": """
@@ -655,30 +655,30 @@ addop -u <username> -p <password> [-r <role>]
 Create a new operator account on the teamserver.
 
 Flags:
-  -u, --username   Username for the new operator
-  -p, --password   Password for the new operator
-  -r, --role       Role to assign (default: operator)""",
+	-u, --username   Username for the new operator
+	-p, --password   Password for the new operator
+	-r, --role       Role to assign (default: operator)""",
 
-  "delop": """delop <operator1[,operator2,...]>
+	"delop": """delop <operator1[,operator2,...]>
 Remove one or more operator accounts from the database (by ID or alias).
 
 Examples:
-  delop alice
-  delop bob,carol,dave""",
+	delop alice
+	delop bob,carol,dave""",
 
-  "modop": """usage: modop [-h] -o OPERATOR [-n NAME] [-p PASSWORD] [-r {operator,admin}]
+	"modop": """usage: modop [-h] -o OPERATOR [-n NAME] [-p PASSWORD] [-r {operator,admin}]
 Modify an existing operator’s username, password, and/or role.
 
 optional arguments:
-  -h, --help            show this help message and exit
+	-h, --help            show this help message and exit
 
-  -o OPERATOR, --operator OPERATOR  Operator ID or alias to modify (required
+	-o OPERATOR, --operator OPERATOR  Operator ID or alias to modify (required
 
-  -n NAME, --name NAME  New username for the operator
+	-n NAME, --name NAME  New username for the operator
 
-  -p PASSWORD, --password PASSWORD  New password for the operator
-  
-  -r {operator,admin}, --role {operator,admin}  New role for the operator""",
+	-p PASSWORD, --password PASSWORD  New password for the operator
+	
+	-r {operator,admin}, --role {operator,admin}  New role for the operator""",
 
 	"alert": """alert [-o <operator>] [--red|--green|--yellow|--blue|--magenta|--cyan|--white] <message>
 
@@ -686,22 +686,22 @@ Broadcast the given <message> to **all** operators (or only to a specific operat
 with optional color flags (defaults to white).
 
 Examples:
-  alert "Scheduled maintenance begins in 5m"
-  alert --yellow "Reminder: rotate logs"
-  alert -o alice --blue "Alice, please verify your session"
+	alert "Scheduled maintenance begins in 5m"
+	alert --yellow "Reminder: rotate logs"
+	alert -o alice --blue "Alice, please verify your session"
 """,
 	
 	"kick": """kick (-a | -o <op1,op2,...>)
 Kick one or more operators (or all of them).
 
 Flags:
-  -o, --operator   Comma‑separated operator ID(s) or alias(es)
-  -a, --all        Kick ALL operators
+	-o, --operator   Comma‑separated operator ID(s) or alias(es)
+	-a, --all        Kick ALL operators
 
 Examples:
-  kick -o 6f75e5bb-…         # kick a single operator
-  kick -o alice,bob          # kick two operators
-  kick -a                    # kick everyone
+	kick -o 6f75e5bb-…         # kick a single operator
+	kick -o alice,bob          # kick two operators
+	kick -a                    # kick everyone
 """,
 
 	"alias": """alias [-o|--operator] <OLD_ID_or_ALIAS> <NEW_ALIAS>
@@ -709,8 +709,8 @@ Without -o: alias a session ID/alias.
 With -o:   alias an operator ID.
 
 Examples:
-  alias abc123… my-target
-  alias -o 6f75e5bb… alice""",
+	alias abc123… my-target
+	alias -o 6f75e5bb… alice""",
 
 	"shell": """shell <session_id>\nStarts an interactive shell with a specific session ID.\nExample: shell gunner""",
 	"kill": """kill -i <session_id>\n\nTerminates the specified session (HTTP, HTTPS or TCP).\n\nExample:\n  kill -i abc123""",
@@ -802,5 +802,98 @@ Usage:
 	shelldefence on    Enable command‐inspection guard
 	shelldefence off   Disable command‐inspection guard""",
 "gunnershell": """gunnershell <session_id_or_alias>
-Starts a Meterpreter-style Gunner subshell on the specified session."""
+Starts a Meterpreter-style Gunner subshell on the specified session.""",
+
+"xfer": {
+    "_desc": """xfer <subcommand>
+
+Subcommands:
+    xfer list                                List transfers (optionally scoped to a session)
+    xfer status -t <tid|pattern> [-i <sid>]  Show detailed status of one transfer
+    xfer resume -t <tid|pattern> [-i <sid>]  Resume a paused/failed transfer
+    xfer cancel -t <tid|pattern> [-i <sid>]  Cancel a running transfer
+    xfer clear [ -a | -t tid | -i sid | -f ] Clear entries from the local transfer store
+
+Notes:
+    - <sid> may be a session ID or alias; wildcards are supported (e.g., 2g*).
+    - <tid|pattern> accepts a full TID, a unique prefix, or a simple * wildcard (e.g., a97*, *db4*, bd1a*5e).
+    - Transfers run silently; use `xfer status` or `xfer list` to monitor progress.""",
+
+    "list": """xfer list [-i <sid>]
+List all known transfers in a compact, width-aware table.
+
+Columns:
+    SID, TID, dir, type, status, progress (% and bytes), rate (avg), path (src → dst)
+
+Behavior:
+    - Sorted with interesting items first (error/paused/running), then by most recent update.
+    - Paths are middle-ellipsized to fit your terminal width.
+
+Options:
+    -i <sid>     Session ID or alias (supports wildcards, e.g., 2g*)
+
+Examples:
+    xfer list
+    xfer list -i 2g*""",
+
+    "status": """xfer status -t <tid|pattern> [-i <sid>]
+Show detailed status/progress for a specific transfer.
+
+Options:
+    -t <tid|pattern>   Full TID, unique prefix, or * wildcard pattern (e.g., a97*, *db4*, bd1a*5e)
+    -i <sid>           (Optional) Restrict search to a specific session (supports wildcards)
+
+Behavior:
+    - If multiple transfers match, you'll be shown an 'ambiguous' message listing candidates.
+    - If a transfer was moved to a new session, you can pass -i to rebind and resume.
+
+Examples:
+    xfer status -t a97*
+    xfer status -t a97da845db48
+    xfer status -t *db4* -i qmg53-*""",
+
+    "resume": """xfer resume -t <tid|pattern> [-i <sid>]
+Resume a paused or previously failed transfer (download or upload).
+
+Options:
+    -t <tid|pattern>   Full TID, unique prefix, or * wildcard pattern
+    -i <sid>           (Optional) Restrict search to a specific session (supports wildcards)
+
+Examples:
+    xfer resume -t a97*
+    xfer resume -t ffe363219b6f -i 2g*""",
+
+    "cancel": """xfer cancel -t <tid|pattern> [-i <sid>]
+Cancel a running transfer.
+
+Options:
+    -t <tid|pattern>   Full TID, unique prefix, or * wildcard pattern
+    -i <sid>           (Optional) Restrict search to a specific session (supports wildcards)
+
+Examples:
+    xfer cancel -t a97*
+    xfer cancel -t ffe363219b6f -i 2g*""",
+
+    "clear": """xfer clear [ -a | -t <tid[,tid2,...]> | -i <sid-pattern> | -f <file> ]
+Delete transfer history entries from the local transfer store.
+
+Selectors (choose ONE):
+    -a                     Clear ALL transfers for ALL sessions
+    -t <tid[,tid2,...]>    Clear one or more TIDs (supports unique prefixes, comma-separated)
+    -i <sid-pattern>       Clear ALL transfers for sessions matching <sid-pattern> (wildcards OK)
+    -f <file>              Clear TIDs listed in <file> (one per line, comments with '#')
+
+Examples:
+    xfer clear -a
+    xfer clear -t ffe3632
+    xfer clear -t 463a4e37fbab,92bd483f6924
+    xfer clear -i 2g3sj-*
+    xfer clear -f /tmp/tids.txt
+
+Notes:
+    - If any matching transfer is still RUNNING, it will be cancelled first.
+    - Safe: only paths within the local transfer store are touched."""
+},
+
+
 }

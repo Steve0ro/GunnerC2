@@ -2,7 +2,7 @@ import base64
 import queue
 import time
 import logging
-from core.utils import defender
+from core.utils import defender, normalize_output
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,8 @@ class CommandRouter:
 		Apply Session-Defender, base64-encode cmd, then enqueue it.
 		Raises PermissionError if defender blocks it.
 		"""
+
+		self.cmd = cmd
 
 		start_ts = time.time()
 		logger.debug(
@@ -121,6 +123,7 @@ class CommandRouter:
 			self.session.merge_response_queue[op_id].qsize(),
 			decoded
 		)
+		decoded = normalize_output(decoded, self.cmd)
 		return decoded
 
 	def flush_response(self, op_id: str = "console"):

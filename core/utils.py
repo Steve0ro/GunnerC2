@@ -113,43 +113,56 @@ PROMPT_PATTERNS = [
 	# add more if you spawn e.g. cmd.exe, fish, etc.
 ]
 
+WRAPPER_ARTIFACTS = {
+	'";',              # the stray semicolon+quote line
+	'Write-Output "',  # the trailing half-marker line
+}
+
 def normalize_output(raw: str, last_cmd: str) -> str:
 	"""
 	1) Strip the echoed command
 	2) Remove any lines matching known prompts
-	3) Trim leading/trailing whitespace
+	3) Drop our leftover wrapper artifacts ("; and Write-Output ")
+	4) Trim leading/trailing whitespace
 	"""
 	lines = raw.splitlines()
+	cleaned = []
 
-	# 1) if the first non‑empty line equals our command, drop it
-	if lines and lines[0].strip() == last_cmd.strip():
-		lines.pop(0)
+	for line in lines:
+		s = line.strip()
 
-	# 2) filter out any lines that look like a prompt
-	def is_prompt(line: str) -> bool:
-		for pat in PROMPT_PATTERNS:
-			if pat.match(line):
-				return True
-		return False
+		# 1) drop an exact echo of our command
+		if s == last_cmd.strip():
+			continue
 
-	cleaned = [l for l in lines if not is_prompt(l)]
+		# 2) drop any PS/CMD/bash prompts
+		if any(pat.match(line) for pat in PROMPT_PATTERNS):
+			continue
 
-	# 3) join & strip
+		# 3) drop any pure wrapper‐artifact lines
+		if s in WRAPPER_ARTIFACTS:
+			continue
+
+		if re.match(r"^__OP__[^_]+__$", s):
+			continue
+
+		cleaned.append(line)
+
 	return "\n".join(cleaned).strip()
 
 def echo(msg: str, to_console, to_op, world_wide, color=False, _raw_printer=print, end="\n"):
 	#print_override.set_output_context(to_console=to_console, to_op=to_op, world_wide=world_wide)
 	logger.debug(
-        "ENTER echo: msg=%r, to_console=%r, to_op=%r, world_wide=%r, color=%r, end=%r",
-        msg, to_console, to_op, world_wide, color, end
-    )
+		"ENTER echo: msg=%r, to_console=%r, to_op=%r, world_wide=%r, color=%r, end=%r",
+		msg, to_console, to_op, world_wide, color, end
+	)
 
 	notcmd = False
 	no_raw_print = False
 	if world_wide:
 		logger.debug("world_wide path: broadcasting to all operators")
 		for ident, obj in op_manage.operators.items():
-			logger.debug(" → operator %s: handler=%r", ident, op.handler)
+			logger.debug(" → operator %s: handler=%r", ident, obj.handler)
 			sock = obj.handler
 			queue = obj.op_queue
 
@@ -630,90 +643,91 @@ COMMAND_ALIASES = {
 
 # 1) Two groups of commands + descriptions
 MAIN_SESSION_COMMANDS = {
-    "start":       "Start listening for new agents",
-    "sessions":    "List all active sessions",
-    "alias":       "Assign an alias to a session or an operator",
-    "listeners":   "List all active listeners",
-    "shell":       "Drop into a full interactive shell",
-    "kill":        "Terminate a session",
-    "jobs":        "List background jobs",
+	"start":       "Start listening for new agents",
+	"sessions":    "List all active sessions",
+	"alias":       "Assign an alias to a session or an operator",
+	"listeners":   "List all active listeners",
+	"shell":       "Drop into a full interactive shell",
+	"kill":        "Terminate a session",
+	"jobs":        "List background jobs",
 }
 
 MAIN_CORE_UTILITIES = {
-    "generate":    "Generate a stager or payload",
-    "exec":        "Execute an arbitrary OS command",
-    "download":    "Download a file from a session",
-    "upload":      "Upload a file to a session",
-    "portfwd":     "Manage port‐forwards",
-    "search":      "Search available modules or sessions",
-    "use":         "Select a module to run",
-    "banner":      "Show the GUNNER ASCII banner",
-    "shelldefence":"Toggle session‐defender on/off",
-    "gunnershell": "Drop into the GunnerShell subshell",
+	"generate":    "Generate a stager or payload",
+	"exec":        "Execute an arbitrary OS command",
+	"download":    "Download a file from a session",
+	"upload":      "Upload a file to a session",
+	"xfer":        "Manage your transfers",
+	"portfwd":     "Manage port‐forwards",
+	"search":      "Search available modules or sessions",
+	"use":         "Select a module to run",
+	"banner":      "Show the GUNNER ASCII banner",
+	"shelldefence":"Toggle session‐defender on/off",
+	"gunnershell": "Drop into the GunnerShell subshell",
 }
 
 MAIN_OPERATOR_COMMANDS = {
-    "operators":   "List or query operator consoles & accounts",
-    "addop":       "Add a new operator account",
-    "delop":       "Delete an operator account",
-    "modop":       "Modify an operator account",
-    "alert":       "Broadcast a message to all operators",
-    "kick":        "Kick an operator off the C2",
+	"operators":   "List or query operator consoles & accounts",
+	"addop":       "Add a new operator account",
+	"delop":       "Delete an operator account",
+	"modop":       "Modify an operator account",
+	"alert":       "Broadcast a message to all operators",
+	"kick":        "Kick an operator off the C2",
 }
 
 # ─── modify print_help ─────────────────────────────────────────────────
 def print_help(cmd=None, gunnershell=False):
-    help_dict = gunnershell_commands if gunnershell else commands
+	help_dict = gunnershell_commands if gunnershell else commands
 
-    # If no sub‑arg AND we’re in the main shell, show grouped output
-    if cmd is None and not gunnershell:
-        print(brightyellow + "\nSession Management Commands\n===========================\n")
-        for name, desc in MAIN_SESSION_COMMANDS.items():
-            print(brightgreen + f"{name:<15} {desc}")
-        print()
-        print(brightyellow + "Core Utilities\n==============\n")
-        for name, desc in MAIN_CORE_UTILITIES.items():
-            print(brightgreen + f"{name:<15} {desc}")
-        print()
-        print(brightyellow + "Operator Commands\n=================\n")
-        for name, desc in MAIN_OPERATOR_COMMANDS.items():
-            print(brightgreen + f"{name:<15} {desc}")
-        print(brightyellow + "\nUsage: help or help <command> [subcommand]\n")
-        return
+	# If no sub‑arg AND we’re in the main shell, show grouped output
+	if cmd is None and not gunnershell:
+		print(brightyellow + "\nSession Management Commands\n===========================\n")
+		for name, desc in MAIN_SESSION_COMMANDS.items():
+			print(brightgreen + f"{name:<15} {desc}")
+		print()
+		print(brightyellow + "Core Utilities\n==============\n")
+		for name, desc in MAIN_CORE_UTILITIES.items():
+			print(brightgreen + f"{name:<15} {desc}")
+		print()
+		print(brightyellow + "Operator Commands\n=================\n")
+		for name, desc in MAIN_OPERATOR_COMMANDS.items():
+			print(brightgreen + f"{name:<15} {desc}")
+		print(brightyellow + "\nUsage: help or help <command> [subcommand]\n")
+		return
 
-    # Otherwise, fall back to your existing single/ two‑level help logic…
-    if cmd:
-        parts = cmd.split()
-        if parts[0] in COMMAND_ALIASES:
-            parts[0] = COMMAND_ALIASES[parts[0]]
-            cmd = " ".join(parts)
+	# Otherwise, fall back to your existing single/ two‑level help logic…
+	if cmd:
+		parts = cmd.split()
+		if parts[0] in COMMAND_ALIASES:
+			parts[0] = COMMAND_ALIASES[parts[0]]
+			cmd = " ".join(parts)
 
-    if not cmd:
-        return
+	if not cmd:
+		return
 
-    parts = cmd.split()
-    # Top‐level
-    if len(parts) == 1:
-        c = parts[0]
-        if c not in help_dict:
-            print(brightyellow + f"No help available for '{c}'.")
-            return
+	parts = cmd.split()
+	# Top‐level
+	if len(parts) == 1:
+		c = parts[0]
+		if c not in help_dict:
+			print(brightyellow + f"No help available for '{c}'.")
+			return
 
-        if isinstance(help_dict[c], str):
-            print(brightgreen + f"\n{help_dict[c]}\n")
-        else:  # dict
-            print(brightgreen + f"\n{help_dict[c]['_desc']}\n")
-        return
+		if isinstance(help_dict[c], str):
+			print(brightgreen + f"\n{help_dict[c]}\n")
+		else:  # dict
+			print(brightgreen + f"\n{help_dict[c]['_desc']}\n")
+		return
 
-    # Two‐level (subcommand) help
-    if len(parts) == 2:
-        c, sub = parts
-        if c in help_dict and isinstance(help_dict[c], dict) and sub in help_dict[c]:
-            print(brightgreen + f"\n{help_dict[c][sub]}\n")
-        else:
-            print(brightyellow + f"No help available for '{c} {sub}'.")
-        return
+	# Two‐level (subcommand) help
+	if len(parts) == 2:
+		c, sub = parts
+		if c in help_dict and isinstance(help_dict[c], dict) and sub in help_dict[c]:
+			print(brightgreen + f"\n{help_dict[c][sub]}\n")
+		else:
+			print(brightyellow + f"No help available for '{c} {sub}'.")
+		return
 
-    print(brightyellow + "Too deep nesting in help. Only 'help' or 'help <command> [sub]' allowed.")
+	print(brightyellow + "Too deep nesting in help. Only 'help' or 'help <command> [sub]' allowed.")
 
 defender = SessionDefender()

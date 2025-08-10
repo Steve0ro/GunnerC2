@@ -17,15 +17,15 @@ class Session:
         self.sid = sid
         self.transport = transport
         self.handler = handler
-        self.merge_command_queue: Dict[str, queue.Queue] = {}
-        self.merge_response_queue: Dict[str, queue.Queue] = {}
+        self.merge_command_queue: Dict[str, queue.Queue(maxsize=1000)] = {}
+        self.merge_response_queue: Dict[str, queue.Queue(maxsize=1000)] = {}
         self.lock = threading.Lock()
         self.recv_lock = threading.Lock()
         self.exec_lock = threading.Lock()
         self.command_queue = queue.Queue()
         self.output_queue = queue.Queue()
-        self.meta_command_queue = queue.Queue()
-        self.meta_output_queue = queue.Queue()
+        self.meta_command_queue = queue.Queue(maxsize=1000)
+        self.meta_output_queue = queue.Queue(maxsize=1000)
         self.metadata = {}
         self.metadata_stage = 0
         self.collection = 0
@@ -60,7 +60,7 @@ class Session:
                 ("hostname", "hostname"),
                 ("user", "whoami"),
                 #("os", "powershell.exe -nop -Command \"((cmd.exe /c ver) | Select-String -Pattern 'Windows').Matches.Value\""),
-                ("arch", 'powershell.exe -Command "(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture)"')
+                ("arch", '(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty OSArchitecture)')
             ]
 
 class TimeoutException(Exception):

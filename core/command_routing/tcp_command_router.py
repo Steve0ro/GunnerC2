@@ -44,6 +44,7 @@ class TcpCommandRouter:
 		Atomically run send+receive under a session-wide lock.
 		Ensures two operators never interleave on the same socket.
 		"""
+		result = ""
 		logger.debug(
 			"[%s] execute() called: cmd=%r, op_id=%r, timeout=%s, portscan=%r, retries=%d, bypass=%r",
 			time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -60,7 +61,7 @@ class TcpCommandRouter:
 				self.send(cmd, op_id=op_id, defender_bypass=defender_bypass)
 			except Exception as e:
 				logger.exception("[%s] execute.send() error: %s", time.strftime("%H:%M:%S"), e)
-				raise
+				
 
 			# receive and normalize
 			try:
@@ -73,7 +74,7 @@ class TcpCommandRouter:
 				)
 			except Exception as e:
 				logger.exception("[%s] execute.receive() error: %s", time.strftime("%H:%M:%S"), e)
-				raise
+				
 
 			elapsed = time.time() - start_ts
 			logger.debug("[%s] execute() completed in %.4fs, result=%r",
@@ -93,8 +94,10 @@ class TcpCommandRouter:
 
 				if not data:
 					break
-		except (socket.timeout, BlockingIOError, OSError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
+		except (socket.timeout, BlockingIOError, OSError, ssl.SSLWantReadError, ssl.SSLWantWriteError, ConnectionResetError, BrokenPipeError):
+			logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
 			pass
+
 		finally:
 			# restore blocking/timeout for real read
 			with self.send_lock:
@@ -142,9 +145,14 @@ class TcpCommandRouter:
 			try:
 				self.sock.sendall(wrapped.encode() + b"\n")
 				logger.debug("[%s] Sent wrapped command to socket", time.strftime("%H:%M:%S"))
+
+			except (ConnectionResetError, BrokenPipeError, OSError):
+				logger.exception(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
+					
+
 			except Exception as e:
 				logger.exception("[%s] Failed to send command: %s", time.strftime("%H:%M:%S"), e)
-				raise
+			
 
 	def receive(self,
 				cmd: str,
@@ -177,6 +185,9 @@ class TcpCommandRouter:
 					if portscan_active and not got_any and (retries == 0 or attempt < retries):
 						attempt += 1
 						continue
+					break
+				except (ConnectionResetError, BrokenPipeError, OSError):
+					logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
 					break
 				if not data:
 					break

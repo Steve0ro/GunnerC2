@@ -3,12 +3,13 @@ logger = logging.getLogger(__name__)
 
 import socket
 import ssl
+import os
 import ipaddress
 import tempfile
 import datetime
 import threading
 
-from core.listeners.base import Listener, register_listener, socket_to_listener
+from core.listeners.base import Listener, register_listener, socket_to_listener, _reg_lock
 from core import utils
 from core.session_handlers import session_manager
 from core import shell
@@ -69,6 +70,7 @@ def _generate_tls_context(listen_ip: str) -> ssl.SSLContext:
 	ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 	ctx.verify_mode = ssl.CERT_NONE
 	ctx.load_cert_chain(certfile=cert_file.name, keyfile=key_file.name)
+	os.unlink(cert_file.name); os.unlink(key_file.name)
 	return ctx
 
 def _collect_tcp_metadata(sid: str):
@@ -186,12 +188,14 @@ class TcpListener(Listener):
 
 		# record mapping
 		if self.is_ssl:
-			utils.tls_listener_sockets[f"tls-{ip}:{port}"] = self.server
-			socket_to_listener[self.server.fileno()] = self.id
+			with _reg_lock:
+				utils.tls_listener_sockets[f"tls-{ip}:{port}"] = self.server
+				socket_to_listener[self.server.fileno()] = self.id
 
 		elif not self.is_ssl:
-			utils.tcp_listener_sockets[f"tcp-{ip}:{port}"] = self.server
-			socket_to_listener[self.server.fileno()] = self.id
+			with _reg_lock:
+				utils.tcp_listener_sockets[f"tcp-{ip}:{port}"] = self.server
+				socket_to_listener[self.server.fileno()] = self.id
 
 		else:
 			print(brightred + f"[!] Unknown listener type detected!")

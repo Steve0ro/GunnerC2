@@ -103,8 +103,9 @@ def recv_encrypted(raw_sock) -> bytes:
 			return b''
 
 		# 2) Decode length, bail on non‑positive
+		MAX_OP_MSG = 10 * 1024 * 1024  # 10MB
 		length = int.from_bytes(header, 'big')
-		if length <= 0:
+		if length <= 0 or length > MAX_OP_MSG:
 			return b''
 
 		# 3) Read the full encrypted blob

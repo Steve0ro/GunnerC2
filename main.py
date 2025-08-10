@@ -53,14 +53,16 @@ from core.banner import print_banner
 from core.prompt_manager import prompt_manager
 
 # Command Execution Imports
-
 from core.command_execution import http_command_execution as http_exec
 from core.command_execution import tcp_command_execution as tcp_exec
 
 # Listener Imports
-
 from core.listeners.base import load_listeners, LISTENER_CLASSES, create_listener, stop_listener
 from core.listeners import tcp_listener, https_listener, http_handler
+
+# Transfer Framework Imports
+from core.transfers.manager import TransferManager, TransferOpts
+from core.transfers import xfer as xcmd
 
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -261,16 +263,17 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 		try:
 			try:
 				args = shlex.split(user)
-				parser = argparse.ArgumentParser(prog="download", add_help=False)
-				parser.add_argument("-i", required=True)
-				parser.add_argument("-f", required=True)
-				parser.add_argument("-o", required=True)
+				parser = SilentParser(prog="download", add_help=False)
+				parser.add_argument("-i", required=True, help="Session ID or alias (supports wildcards)")
+				parser.add_argument("-f", required=True, help="Remote file or folder path")
+				parser.add_argument("-o", required=True, help="Local output file or directory")
+				parser.add_argument("--chunk", type=int, default=262144, required=False, help="Chunk size (bytes)")
 					
 				try:
 					parsed_args = parser.parse_args(args[1:])
 
 				except SystemExit:
-					print(brightyellow + "Usage: download -i <session_id> -f <remote_file> -o <local_file>")
+					print(brightyellow + "Usage: download -i <session_id> -f <remote> -o <local> [--chunk N] [--folder]")
 					return
 
 			except Exception as e:
@@ -293,42 +296,30 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				print(brightred + f"Invalid session or alias: {raw_id}")
 				return
 
-			remote_file = parsed_args.f
-
-			if "\\" not in remote_file and operatingsystem == "windows":
+			remote_path = parsed_args.f
+			if "\\" not in remote_path and operatingsystem == "windows":
 				print(brightred + "Use double backslashes when specifying file paths.")
 				return
+			local_out = parsed_args.o
+			# decide folder hint (explicit flag)
 
-			local_file = parsed_args.o
+			# IMPORTANT:
+			# Do NOT append basename here for folders. Let TransferManager derive
+			# a Windows-aware basename (e.g., 'repos' from 'C:\\Users\\leigh\\repos\\').
+			# 'local_out' is the destination directory the user provided with -o.
 
-			"""if sid not in session_manager.sessions:
-				print(f"Invalid session ID: {sid}")
-				continue"""
-
-			if session_manager.sessions[sid].transport in ("http", "https"):
-				check = upload_any(sid, local_file, remote_file)
-				if check is True:
-					shell.download_folder_http(sid, remote_file, local_file)
-
-				elif check is False:
-					shell.download_file_http(sid, remote_file, local_file, op_id=to_op)
-
-				else:
-					pass
-
-			elif session_manager.is_tcp_session(sid):
-				check = upload_any(sid, local_file, remote_file)
-				if check is True:
-					shell.download_folder_tcp(sid, remote_file, local_file)
-
-				elif check is False:
-					shell.download_file_tcp(sid, remote_file, local_file)
-
-				else:
-					pass
-
-			else:
-				print(brightred + f"[-] ERROR unsupported shell type.")
+			# IMPORTANT:
+			# Do NOT try to guess file vs folder here. Let the TransferManager probe the remote path.
+			# Pass local_out directly; manager will interpret it appropriately.
+			tm = TransferManager()
+			tid = tm.start_download(
+				sid=sid,
+				remote_path=remote_path,
+				local_path=local_out,
+				folder=None,  # auto-detect remotely
+				opts=TransferOpts(chunk_size=parsed_args.chunk, to_console=to_console, to_op=to_op)
+			)
+			print(brightyellow + f"[*] TID={tid} (use: xfer status -t {tid} | xfer resume -t {tid})")
 
 		except SystemExit:
 			print(brightgreen + "Run help for info: help or help <command> [subcommand]")
@@ -341,57 +332,149 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 
 	elif user.startswith("upload"):
 		try:
-			parts = user.split()
-			if len(parts) < 7:
-				print(brightyellow + "Usage: upload -i <session_id> -l <local_file> -r <remote_file>")
-
+			# Use the same quiet parser pattern as `download`
+			args = shlex.split(user)
+			parser = SilentParser(prog="upload", add_help=False)
+			parser.add_argument("-i", required=True, help="Session ID or alias (supports wildcards)")
+			parser.add_argument("-l", required=True, help="Local file or folder path")
+			parser.add_argument("-r", required=True, help="Remote destination file or directory")
+			parser.add_argument("--chunk", type=int, default=262144, required=False, help="Chunk size (bytes)")
 			try:
-				raw_sid = parts[parts.index("-i") + 1]
-				local_file = parts[parts.index("-l") + 1]
-				remote_file = parts[parts.index("-r") + 1]
+				parsed_args = parser.parse_args(args[1:])
+			except SystemExit:
+				print(brightyellow + "Usage: upload -i <session_id> -l <local> -r <remote> [--chunk N]")
+				return
+
+			# Resolve SID/alias
+			try:
+				sid = session_manager.resolve_sid(parsed_args.i)
+			except ValueError as e:
+				print(brightred + str(e))
+				return
+
+			# Validate session
+			session = session_manager.sessions.get(sid)
+			if not session:
+				print(brightred + f"Invalid session or alias: {parsed_args.i}")
+				return
+
+			# Pull OS/type for remote path normalization hints
+			meta = session.metadata
+			remote_os = meta.get("os", "").lower()
+
+			local_path  = parsed_args.l
+			remote_path = parsed_args.r
+
+			# Friendly nudge for Windows remote paths (do not hard-fail—let manager handle edge-cases)
+			if remote_os == "windows" and ("\\" not in remote_path):
+				print(brightyellow + "[*] Windows agents, require double backslashes in remote paths (e.g., C:\\\\path\\\\to)")
+				return
+
+			# Local must exist for upload
+			if not os.path.exists(local_path):
+				print(brightred + f"[!] Local path does not exist: {local_path}")
+				return
+
+			# Decide folder flag based on *local* path (uploading a directory vs a single file)
+			is_folder = os.path.isdir(local_path)
+
+			# Kick off resumable upload via the new manager
+			tm = TransferManager()
+			tid = tm.start_upload(
+				sid=sid,
+				local_path=local_path,
+				remote_path=remote_path,
+				folder=is_folder,
+				opts=TransferOpts(chunk_size=parsed_args.chunk, to_console=to_console, to_op=to_op)
+			)
+			# UX parity with download
+			print(brightyellow + f"[*] TID={tid} (use: xfer status -t {tid} | xfer resume -t {tid})")
+
+		except Exception as e:
+			print(brightred + f"[!] Upload failed to start: {e}")
+		return
+
+	elif user.startswith("xfer"):
+		try:
+			def _usage():
+				"""print(brightyellow + (
+					"Usage:\n"
+					"  xfer list [-i <session_id_or_alias>]\n"
+					"  xfer status -t <tid|prefix> [-i <session_id_or_alias>]\n"
+					"  xfer resume -t <tid|prefix> [-i <session_id_or_alias>]\n"
+					"  xfer cancel -t <tid|prefix> [-i <session_id_or_alias>]\n"
+				))"""
+				utils.print_help("xfer")
+
+			args = shlex.split(user)
+			if len(args) == 1 or args[1] in ("-h", "--help"):
+				_usage()
+				return
+
+			sub = args[1].lower()
+			rest = args[2:]
+
+			if sub == "clear":		
+				parser = SilentParser(prog="xfer clear", add_help=False)
+				g = parser.add_mutually_exclusive_group(required=True)
+				g.add_argument("-a", "--all", action="store_true")
+				g.add_argument("-t", metavar="TIDS", help="TID or comma-separated TIDs/prefixes")
+				g.add_argument("-i", metavar="SIDPAT", help="Session ID wildcard (e.g., 2g3sj-*)")
+				g.add_argument("-f", metavar="FILE", help="File containing TIDs (one per line)")
 				try:
-					unformatted_sid = session_manager.resolve_sid(raw_sid)
-					sid = str(unformatted_sid)
-
-				except Exception as e:
-					print(brightred + f"Invalid session or alias: {raw_sid}")
-
-				session = session_manager.sessions[sid]
-				meta = session.metadata
-			except Exception as e:
-				print(brightred + f"ERROR: {e}")
-
-			if "\\" not in remote_file and meta.get("os", "").lower() == "windows":
-				print(brightred + "Use double backslashes when specifying file paths.")
+					ns = parser.parse_args(args[2:])
+				except SystemExit:
+					utils.print_help("xfer clear")
+					return
+				xcmd.handle_clear(ns, to_console=to_console, to_op=to_op)
 				return
 
-				
-			if not sid:
-				print(brightred + f"Invalid session or alias: {raw_id}")
+			elif sub == "list":
+				p = SilentParser(prog="xfer list", add_help=False)
+				p.add_argument("-i", required=False)
+				try:
+					ns = p.parse_args(rest)
+				except SystemExit:
+					_usage()
+					return
+				xcmd.cmd_list(getattr(ns, "i", None), to_console=to_console, to_op=to_op)
 				return
 
-			"""if sid not in session_manager.sessions:
-				print("Invalid session ID.")
-				continue"""
+			def _parse_tid(cmdname: str):
+				p = SilentParser(prog=f"xfer {cmdname}", add_help=False)
+				p.add_argument("-t", required=True)
+				p.add_argument("-i", required=False)
+				try:
+					return p.parse_args(rest)
+				except SystemExit:
+					_usage()
+					return None
 
+			if sub == "status":
+				ns = _parse_tid("status")
+				if ns is None:
+					return
+				xcmd.cmd_status(ns.t, getattr(ns, "i", None), to_console=to_console, to_op=to_op)
+				return
 
-			if session_manager.sessions[sid].transport in ("http", "https"):
-				if os.path.isdir(local_file):
-					shell.upload_folder_http(sid, local_file, remote_file)
-				else:
-					shell.upload_file_http(sid, local_file, remote_file)
+			if sub == "resume":
+				ns = _parse_tid("resume")
+				if ns is None:
+					return
+				xcmd.cmd_resume(ns.t, getattr(ns, "i", None), to_console=to_console, to_op=to_op)
+				return
 
-			elif session_manager.is_tcp_session(sid):
-				if os.path.isdir(local_file):
-					shell.upload_folder_tcp(sid, local_file, remote_file)
-				else:
-					shell.upload_file_tcp(sid, local_file, remote_file)
-			else:
-				print(brightred + "Unknown session type.")
+			if sub == "cancel":
+				ns = _parse_tid("cancel")
+				if ns is None:
+					return
+				xcmd.cmd_cancel(ns.t, getattr(ns, "i", None), to_console=to_console, to_op=to_op)
+				return
 
-		except:
-			return
-			#print("Usage: upload -i <session_id> -l <local_file> -r <remote_file>")
+			_usage()
+
+		except Exception as e:
+			print(brightred + f"[!] xfer failed: {e}")
 
 	elif user.startswith("gunnershell") or user.startswith("gs"):
 		try:
@@ -764,8 +847,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
 			parser.add_argument("-lh", "--local_host", required=True)
 			parser.add_argument("-lp", "--local_port", required=True)
-			parser.add_argument("--stager-ip",    help="IP address where the .exe stager will be hosted")
-			parser.add_argument("--stager-port",  type=int, help="Port where the .exe stager will listen")
+			parser.add_argument("--stager-ip", default="0.0.0.0", help="IP address where the .exe stager will be hosted")
+			parser.add_argument("--stager-port", default=9999, type=int, help="Port where the .exe stager will listen")
 
 		elif payload_type == "tls":
 			parser = SilentParser(prog="generate (tls)", add_help=False)
@@ -781,7 +864,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 
 		elif payload_type == "http":
 			parser = SilentParser(prog="generate (http)", add_help=False)
-			parser.add_argument("-f", "--format", choices=["ps1", "bash"], required=True)
+			parser.add_argument("-f", "--format", choices=["ps1", "bash", "exe"], required=True)
 			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
 			parser.add_argument("-p", "--payload", choices=["http"], required=True)
 			parser.add_argument("-o", "--output", required=False)
@@ -794,6 +877,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
 			parser.add_argument("-lh", "--local_host", required=True)
 			parser.add_argument("-lp", "--local_port", required=True)
+			parser.add_argument("--stager-ip", dest="stager_ip", help="IP address where the .exe stager will be hosted", required=False)
+			parser.add_argument("--stager-port", dest="stager_port", type=int, help="Port where the .exe stager will listen", required=False)
 			parser.add_argument("--interval", required=True)
 
 		elif payload_type == "https":
@@ -834,7 +919,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				byte_range = None
 				profile = None
 
-			if payload_type in ("tcp", "tls") and args.format == "exe":
+			if payload_type in ("tcp", "tls", "http") and args.format == "exe":
 				if not args.stager_ip or not args.stager_port:
 					print(brightred + "[!] For exe payloads you must also supply --stager-ip and --stager-port")
 					return
@@ -884,17 +969,22 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 
 		if payload_type not in ("http", "https"):
 			beacon_interval = False
+			jitter = None
 
 		else:
 			beacon_interval = args.interval
+			jitter = args.jitter
 
-		if payload_type in ("http", "https"):
+		if payload_type in ("https"):
 			jitter = getattr(args, "jitter", 0)
 			stager_ip = False
 			stager_port = False
 
 		else:
-			jitter = None
+			stager_ip = args.stager_ip
+			stager_port = args.stager_port
+
+		if payload_type == "http":
 			stager_ip = args.stager_ip
 			stager_port = args.stager_port
 
@@ -918,6 +1008,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 
 			except Exception as e:
 				print(brightred + f"[!] The -f argument are required: {e}")
+
+		print(f"IP {stager_ip}, PORT {stager_port}")
 
 		if os_type == "windows":
 			raw = generate_payload_windows(args.local_host, args.local_port, obfuscation, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter,

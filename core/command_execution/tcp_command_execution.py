@@ -37,14 +37,11 @@ def run_command_tcp(sid: str,
 			retries=retries,
 			defender_bypass=defender_bypass
 		)
-	except PermissionError as e:
-		print(f"[!] {e}")
-		return None
 
-	except queue.Empty:
+	except queue.Empty as e:
 		logger.debug("TCP execute timeout for sid=%r, op_id=%r", sid, op_id)
-		return None
+		raise ConnectionError(str(e)) from e
 		
 	except Exception as e:
-		logger.exception("Error in TCP execute for sid=%r, op_id=%r: %s", sid, op_id, e)
-		return f"[!] Error: {e}"
+		logger.warning("Error in TCP execute for sid=%r, op_id=%r: %s", sid, op_id, e)
+		raise ConnectionError(str(e)) from e

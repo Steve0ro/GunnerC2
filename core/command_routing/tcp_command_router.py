@@ -60,7 +60,8 @@ class TcpCommandRouter:
 			try:
 				self.send(cmd, op_id=op_id, defender_bypass=defender_bypass)
 			except Exception as e:
-				logger.exception("[%s] execute.send() error: %s", time.strftime("%H:%M:%S"), e)
+				logger.warning("[%s] execute.send() error: %s", time.strftime("%H:%M:%S"), e)
+				raise ConnectionError(f"send failed: {e}") from e
 				
 
 			# receive and normalize
@@ -73,7 +74,8 @@ class TcpCommandRouter:
 					retries=retries
 				)
 			except Exception as e:
-				logger.exception("[%s] execute.receive() error: %s", time.strftime("%H:%M:%S"), e)
+				logger.warning("[%s] execute.receive() error: %s", time.strftime("%H:%M:%S"), e)
+				raise ConnectionError(f"receive failed: {e}") from e
 				
 
 			elapsed = time.time() - start_ts
@@ -96,7 +98,7 @@ class TcpCommandRouter:
 					break
 		except (socket.timeout, BlockingIOError, OSError, ssl.SSLWantReadError, ssl.SSLWantWriteError, ConnectionResetError, BrokenPipeError):
 			logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
-			pass
+			return
 
 		finally:
 			# restore blocking/timeout for real read
@@ -146,12 +148,14 @@ class TcpCommandRouter:
 				self.sock.sendall(wrapped.encode() + b"\n")
 				logger.debug("[%s] Sent wrapped command to socket", time.strftime("%H:%M:%S"))
 
-			except (ConnectionResetError, BrokenPipeError, OSError):
-				logger.exception(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
+			except (ConnectionResetError, BrokenPipeError, OSError) as e:
+				logger.warning(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
+				raise ConnectionError(f"socket send failed: {e}") from e
 					
 
 			except Exception as e:
-				logger.exception("[%s] Failed to send command: %s", time.strftime("%H:%M:%S"), e)
+				logger.warning("[%s] Failed to send command: %s", time.strftime("%H:%M:%S"), e)
+				raise
 			
 
 	def receive(self,

@@ -22,11 +22,20 @@ def _run_cmd(sid: str, cmd: str, transport: str, op_id: Optional[str]) -> str:
 	Route command to the correct execution path and return stdout as string (normalized).
 	"""
 	tr = transport.lower()
-	if tr in ("http","https"):
-		return http_exec.run_command_http(sid, cmd, op_id=op_id) or ""
-	else:
-		# tcp/tls
-		return tcp_exec.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id) or ""
+	try:
+		out = (http_exec.run_command_http(sid, cmd, op_id=op_id) if tr in ("http","https") 
+			else tcp_exec.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id))
+
+	except Exception as e:
+		# Normalize into a connection error for the transfer manager.
+		raise ConnectionError(str(e))
+
+	out = (out or "")
+	# Some older paths may return operator-formatted error lines instead of raising.
+	if out.lstrip().startswith("[!]") or "Error:" in out:
+		raise ConnectionError(out.strip())
+		
+	return out
 
 def _b64_to_bytes(s: str) -> bytes:
 	# strip whitespace/newlines safely
@@ -69,11 +78,24 @@ class ShellProtocol(TransferProtocol):
 				f"\"if [ -f { _linux_shq(st.remote_path) } ]; then stat -c %s { _linux_shq(st.remote_path) }; "
 				"else echo -1; fi\""
 			)
-			out = (_run_cmd(st.sid, sh, st.transport, self.op_id) or "").strip()
+			try:
+				out = (_run_cmd(st.sid, sh, st.transport, self.op_id) or "").strip()
+
+			except Exception as e:
+				logger.warning(brightred + f"Connection Error in remote size grabber: {e}")
+				raise ConnectionError("Connection Error in remote size in upload function _remote_size") from e
+
+			if out == "":
+				logger.warning(brightred + f"Agent unreachable while stat()" + reset)
+				raise ConnectionError("agent unreachable while stat()")
+
 			try:
 				return int(out)
+
 			except Exception:
-				return -1
+				logger.warning(brightred + f"bad stat output: {out!r}" + reset)
+				raise ConnectionError(f"bad stat output: {out!r}")
+
 		else:
 			# Windows: plain integer, -1 if missing
 			ps = (
@@ -82,19 +104,40 @@ class ShellProtocol(TransferProtocol):
 				"$i=Get-Item -LiteralPath $p -ErrorAction SilentlyContinue; "
 				"if ($null -eq $i) { '-1' } else { $i.Length }"
 			)
-			out = (_run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip()
+			try:
+				out = (_run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip()
+
+			except Exception as e:
+				logger.warning(brightred + f"Connection Error in remote size grabber: {e}")
+				raise ConnectionError("Connection Error in remote size in upload function _remote_size") from e
+
+			if out == "":
+				logger.warning(brightred + "agent unreachable while Get-Item" + reset)
+				raise ConnectionError("agent unreachable while Get-Item")
+
+			elif out == "-1":
+				return -1
+
 			try:
 				return int(out)
+
 			except Exception:
-				return -1
+				logger.warning(brightred + f"bad size output: {out!r}" + reset)
+				raise ConnectionError(f"bad size output: {out!r}")
 
 	def _linux_read_chunk(self, st: TransferState, index: int) -> bytes:
 		# dd avoids partial lines and is faster than tail/head for big files
 		bs = st.chunk_size
 		cmd = f"dd if={_linux_shq(st.remote_path)} bs={bs} skip={index} count=1 status=none | base64"
-		out = _run_cmd(st.sid, cmd, st.transport, self.op_id)
+		try:
+			out = _run_cmd(st.sid, cmd, st.transport, self.op_id)
+
+		except Exception as e:
+			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
+			raise ConnectionError("Connection Error in _run_cmd") from e
+
 		if not out.strip():
-			logger.exception(brightred + "No output from agent for linux chunk read!" + reset)
+			logger.warning(brightred + "No output from agent for linux chunk read!" + reset)
 			raise ConnectionError("no output from agent for linux chunk read")
 		return _b64_to_bytes(out)
 
@@ -109,7 +152,13 @@ class ShellProtocol(TransferProtocol):
 			"$fs.Close();"
 			"[Convert]::ToBase64String($buf,0,$read)"
 		)
-		out = _run_cmd(st.sid, ps, st.transport, self.op_id)
+		try:
+			out = _run_cmd(st.sid, ps, st.transport, self.op_id)
+
+		except Exception as e:
+			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
+			raise ConnectionError("Connection Error in _run_cmd") from e
+
 		if not out.strip():
 			raise ConnectionError("no output from agent for windows chunk read")
 		return _b64_to_bytes(out)
@@ -125,7 +174,12 @@ class ShellProtocol(TransferProtocol):
 			f"printf '%s' '{chunk_b64}' | base64 -d | "
 			f"dd of={_linux_shq(st.remote_path)} bs=1M seek={offset} conv=notrunc status=none\""
 		)
-		out = _run_cmd(st.sid, cmd, st.transport, self.op_id)
+		try:
+			out = _run_cmd(st.sid, cmd, st.transport, self.op_id)
+
+		except Exception as e:
+			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
+			raise ConnectionError("Connection Error in _run_cmd") from e
 
 	def _windows_write_chunk(self, st: TransferState, offset: int, chunk_b64: str) -> None:
 		"""
@@ -146,7 +200,12 @@ class ShellProtocol(TransferProtocol):
 			"$s.Close()"
 		)
 		# IMPORTANT: send the snippet directly; do NOT wrap with 'powershell -Command ...'
-		_run_cmd(st.sid, ps, st.transport, self.op_id)
+		try:
+			_run_cmd(st.sid, ps, st.transport, self.op_id)
+
+		except Exception as e:
+			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
+			raise ConnectionError("Connection Error in _run_cmd") from e
 
 	def _prepare_remote_archive(self, st: TransferState) -> None:
 		"""
@@ -162,11 +221,21 @@ class ShellProtocol(TransferProtocol):
 			try:
 				if st.os_type == "windows":
 					ps = f"(Test-Path -LiteralPath {_ps_quote(opt['archive_path'])})"
-					exists = (_run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip().lower() == "true"
+					try:
+						exists = (_run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip().lower() == "true"
+
+					except Exception as e:
+						logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
+						raise ConnectionError("Connection Error in _run_cmd") from e
 
 				else:
 					sh = f"bash -lc 'test -f {_linux_shq(opt['archive_path'])} && echo OK || echo NO'"
-					exists = "OK" in (_run_cmd(st.sid, sh, st.transport, self.op_id) or "")
+					try:
+						exists = "OK" in (_run_cmd(st.sid, sh, st.transport, self.op_id) or "")
+
+					except Exception as e:
+						logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+						raise ConnectionError("Connection Error in _run_cmd") from e
 
 				if exists:
 					st.remote_path = opt["archive_path"]
@@ -188,19 +257,37 @@ class ShellProtocol(TransferProtocol):
 			remote_zip = ntpath.join(parent, base + ".zip")
 			# Remove any existing archive; CreateFromDirectory will fail if it exists.
 			rm = f"if (Test-Path {_ps_quote(remote_zip)}) {{ Remove-Item {_ps_quote(remote_zip)} -Force }}"
-			_run_cmd(st.sid, rm, st.transport, self.op_id)
+			try:
+				_run_cmd(st.sid, rm, st.transport, self.op_id)
+
+			except Exception as e:
+				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+				raise ConnectionError("Connection Error in _run_cmd") from e
+
 			zip_cmd = (
 				"[Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null; "
 				f"[IO.Compression.ZipFile]::CreateFromDirectory({_ps_quote(st.remote_path)},{_ps_quote(remote_zip)},"
 				"[IO.Compression.CompressionLevel]::Optimal,$false)"
 			)
-			out = _run_cmd(st.sid, zip_cmd, st.transport, self.op_id)
+			try:
+				out = _run_cmd(st.sid, zip_cmd, st.transport, self.op_id)
+
+			except Exception as e:
+				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+				raise ConnectionError("Connection Error in _run_cmd") from e
+
 			# Optional: poll until size > EOCD (22 bytes) to avoid empty placeholder issues.
 			size_ps = (
 				f"if (Test-Path {_ps_quote(remote_zip)}) {{ (Get-Item {_ps_quote(remote_zip)}).Length }} else {{ 0 }}"
 			)
 			for _ in range(30):
-				sz = (_run_cmd(st.sid, size_ps, st.transport, self.op_id) or "").strip()
+				try:
+					sz = (_run_cmd(st.sid, size_ps, st.transport, self.op_id) or "").strip()
+
+				except Exception as e:
+					logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+					raise ConnectionError("Connection Error in _run_cmd") from e
+
 				try:
 					if int(sz) > 22:  # larger than empty ZIP EOCD
 						break
@@ -212,8 +299,14 @@ class ShellProtocol(TransferProtocol):
 			st.remote_path         = remote_zip
 			# Save fingerprint + mark prepared
 			mtime_ps = f"(Get-Item {_ps_quote(remote_zip)}).LastWriteTimeUtc.Ticks"
-			mtime = _parse_int(_run_cmd(st.sid, mtime_ps, st.transport, self.op_id))
-			length = _parse_int(_run_cmd(st.sid, size_ps,   st.transport, self.op_id))
+			try:
+				mtime = _parse_int(_run_cmd(st.sid, mtime_ps, st.transport, self.op_id))
+				length = _parse_int(_run_cmd(st.sid, size_ps,   st.transport, self.op_id))
+
+			except Exception as e:
+				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+				raise ConnectionError("Connection Error in _run_cmd") from e
+
 			opt["archive_prepared"] = True
 			opt["archive_path"] = remote_zip
 			opt["archive_ext"] = ".zip"
@@ -222,17 +315,29 @@ class ShellProtocol(TransferProtocol):
 
 		else:
 			remote_tar = f"/tmp/{base}.tar.gz"
-			_run_cmd(st.sid, f"rm -f {_linux_shq(remote_tar)}", st.transport, self.op_id)
-			tar_cmd = f"tar czf {_linux_shq(remote_tar)} -C {_linux_shq(st.remote_path)} ."
-			_run_cmd(st.sid, tar_cmd, st.transport, self.op_id)
+			try:
+				_run_cmd(st.sid, f"rm -f {_linux_shq(remote_tar)}", st.transport, self.op_id)
+				tar_cmd = f"tar czf {_linux_shq(remote_tar)} -C {_linux_shq(st.remote_path)} ."
+				_run_cmd(st.sid, tar_cmd, st.transport, self.op_id)
+
+			except Exception as e:
+				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+				raise ConnectionError("Connection Error in _run_cmd") from e
+
 			st.archive_remote_path = remote_tar
 			st.cleanup_remote_cmd  = f"rm -f {_linux_shq(remote_tar)}"
 			st.remote_path         = remote_tar
 			# Save fingerprint + mark prepared
 			size_sh = f"bash -lc 'stat -c %s {_linux_shq(remote_tar)}'"
 			mtime_sh = f"bash -lc 'stat -c %Y {_linux_shq(remote_tar)}'"
-			length = _parse_int(_run_cmd(st.sid, size_sh,  st.transport, self.op_id))
-			mtime  = _parse_int(_run_cmd(st.sid, mtime_sh, st.transport, self.op_id))
+			try:
+				length = _parse_int(_run_cmd(st.sid, size_sh,  st.transport, self.op_id))
+				mtime  = _parse_int(_run_cmd(st.sid, mtime_sh, st.transport, self.op_id))
+
+			except Exception as e:
+				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+				raise ConnectionError("Connection Error in _run_cmd") from e
+
 			opt["archive_prepared"] = True
 			opt["archive_path"] = remote_tar
 			opt["archive_ext"] = ".tar.gz"
@@ -243,7 +348,13 @@ class ShellProtocol(TransferProtocol):
 	def init_download(self, st: TransferState) -> TransferState:
 		# If folder → build remote archive first.
 		self._prepare_remote_archive(st)
-		total = self._remote_size(st)
+		try:
+			total = self._remote_size(st)
+
+		except Exception as e:
+			logger.warning(brightred + f"Connection Error in _remote_size: {e}" + reset)
+			raise ConnectionError("Connection Error in _remote_size") from e
+
 		st.total_bytes  = total
 		st.total_chunks = chunk_count(total, st.chunk_size)
 		st.status = "running"
@@ -255,7 +366,12 @@ class ShellProtocol(TransferProtocol):
 			return None
 		offset = index_to_offset(idx, st.chunk_size)
 		# Pull the chunk bytes
-		data = self._linux_read_chunk(st, idx) if st.os_type == "linux" else self._windows_read_chunk(st, idx)
+		try:
+			data = self._linux_read_chunk(st, idx) if st.os_type == "linux" else self._windows_read_chunk(st, idx)
+
+		except Exception as e:
+			logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+			raise ConnectionError("Connection Error in _run_cmd") from e
 
 		# Empty output is never OK for mid-stream chunks.
 		if not data:
@@ -315,22 +431,35 @@ class ShellProtocol(TransferProtocol):
 		b64 = base64.b64encode(data).decode()
 		# Absolute byte offset for this chunk
 		offset = index_to_offset(idx, st.chunk_size)
-		if st.os_type == "linux":
-			self._linux_write_chunk(st, offset, b64)
-		else:
-			self._windows_write_chunk(st, offset, b64)
+		try:
+			if st.os_type == "linux":
+				self._linux_write_chunk(st, offset, b64)
+			else:
+				self._windows_write_chunk(st, offset, b64)
+
+		except Exception as e:
+			logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
+			raise ConnectionError("Connection Error in _run_cmd") from e
 
 		# Verify remote size reached at least offset + len(data)
 		try:
-			rsz = self._remote_size(st)
+			try:
+				rsz = self._remote_size(st)
+
+			except Exception as e:
+				logger.warning(brightred + f"Connection Error in _remote_size: {e}" + reset)
+				raise ConnectionError("Connection Error in _remote_size") from e
+
 			need = min(st.total_bytes, offset + len(data))
 			if rsz < need:
 				#print(brightred + f"remote short write: {rsz} < {need}" + reset)
+				logger.warning(brightred + f"remote short write: {rsz} < {need}" + reset)
 				raise ConnectionError(f"remote short write: {rsz} < {need}")
-				logger.exception(brightred + f"remote short write: {rsz} < {need}" + reset)
+
 		except Exception as e:
 			# Surface as a connection error so manager doesn't advance index
-			logger.exception(brightred + f"Exception in next upload chunk function {str(e)}")
+			logger.warning(brightred + f"Exception in next upload chunk function {str(e)}" + reset)
+			raise ConnectionError(str(e))
 
 		st.bytes_done += len(data)
 		st.next_index += 1

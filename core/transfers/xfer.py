@@ -354,12 +354,12 @@ def cmd_list(raw_sid: Optional[str] = None, *, to_console: bool = True, to_op: O
 	try:
 		sid = _resolve_sid_or_none(raw_sid) if raw_sid else None
 	except Exception:
-		_emit(f"[!] Invalid session or alias: {raw_sid}", to_console, to_op, override_quiet=True)
+		_emit(f"[!] Invalid session or alias: {raw_sid}", to_console, to_op, color=brightred, override_quiet=True)
 		return False
 
 	data = tm.list(sid).get("transfers", [])
 	if not data:
-		_emit("[*] No transfers.", to_console, to_op, override_quiet=True)
+		_emit("[*] No transfers.", to_console, to_op, color=brightyellow, override_quiet=True)
 		return True
 
 	# sort: interesting first (error/paused/running), then recency
@@ -450,12 +450,12 @@ def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console:
 	any_matches = _find_tid_anywhere(tm, tid_or_prefix)
 	only, err = _first_match_or_ambiguous(any_matches)
 	if err == "notfound":
-		_emit(f"[!] Transfer not found for TID/prefix: {tid_or_prefix}", to_console, to_op, override_quiet=True)
+		_emit(f"[!] Transfer not found for TID/prefix: {tid_or_prefix}", to_console, to_op, color=brightred, override_quiet=True)
 		return False
 	if err == "ambiguous":
 		# Be explicit so the operator can pick the exact TID
 		s = ", ".join(f"{m.get('sid')}:{m.get('tid')}" for m in any_matches)
-		_emit(f"[!] Ambiguous TID/prefix. Matches: {s}", to_console, to_op, override_quiet=True)
+		_emit(f"[!] Ambiguous TID/prefix. Matches: {s}", to_console, to_op, color=brightred, override_quiet=True)
 		return False
 
 	# 2) If user provided a SID, try to use it directly.
@@ -470,9 +470,9 @@ def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console:
 			pass
 		ok = tm.resume(sid, st0["tid"], opts=TransferOpts(to_console=to_console, to_op=to_op))
 		if ok:
-			_emit(f"[*] Resuming TID={st0['tid']} for session {sid}", to_console, to_op, override_quiet=True)
+			_emit(f"[*] Resuming TID={st0['tid']} for session {sid}", to_console, to_op, color=brightgreen, override_quiet=True)
 			return True
-		_emit(f"[!] Unable to resume TID={st0['tid']} (status may be final)", to_console, to_op, override_quiet=True)
+		_emit(f"[!] Unable to resume TID={st0['tid']} (status may be final)", to_console, to_op, color=brightred, override_quiet=True)
 		return False
 
 	# 3) TID exists, but not under the provided SID (or no SID provided).
@@ -481,7 +481,7 @@ def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console:
 	if not sid_hint:
 		# Operator didn't specify -i → instruct to use -i to rebind
 		_emit(f"[!] TID {real_tid} exists under session {current_sid}. "
-			  f"Use -i <live_session_id> to rebind before resuming.", to_console, to_op, override_quiet=True)
+			  f"Use -i <live_session_id> to rebind before resuming.", to_console, to_op, color=brightyellow, override_quiet=True)
 		return False
 
 	# 4) Rebind to the requested SID, then resume.
@@ -489,7 +489,7 @@ def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console:
 	if current_sid != sid_hint:
 		updated = _rebind_transfer(real_tid, current_sid, sid_hint)
 		if not updated:
-			_emit(f"[!] Failed to rebind {real_tid} from {current_sid} -> {sid_hint}", to_console, to_op, override_quiet=True)
+			_emit(f"[!] Failed to rebind {real_tid} from {current_sid} -> {sid_hint}", to_console, to_op, color=brightred, override_quiet=True)
 			return False
 		# Backfill FILE/FOLDER flag on the rebound state
 		try:

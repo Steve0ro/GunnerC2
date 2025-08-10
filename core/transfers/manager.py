@@ -83,7 +83,7 @@ class TransferManager:
 		pct = (done/total*100.0) if total else 0.0
 		return f"[{st.tid}] {pct:5.1f}%  {human_bytes(done)}/{human_bytes(total)}"
 
-	def _emit(self, opts: TransferOpts, msg: str, color: Optional[str]=None, override_quiet: bool=False) -> None:
+	def _emit(self, opts: TransferOpts, msg: str, color: Optional[str]=None, override_quiet: bool=False, world_wide: bool=False) -> None:
 		if opts.quiet:
 			if color:
 				logger.debug(color + f"{msg}" + reset)
@@ -92,7 +92,7 @@ class TransferManager:
 				logger.debug(f"{msg}")
 
 		else:
-			echo(msg, to_console=opts.to_console, to_op=opts.to_op, world_wide=False, color=color)
+			echo(msg, to_console=opts.to_console, to_op=opts.to_op, world_wide=world_wide, color=color)
 
 	def _backfill_is_folder(self, st) -> None:
 		"""
@@ -198,6 +198,10 @@ class TransferManager:
 
 	def _run_download(self, proto: ShellProtocol, st: TransferState, opts: TransferOpts, stop: threading.Event):
 		try:
+			if st.status != "running":
+				st.status = "running"
+				self.store.save(st)
+
 			# --- Align state with on-disk .part before we start/resume ---
 			try:
 				if st.tmp_local_path and os.path.exists(st.tmp_local_path):
@@ -358,6 +362,12 @@ class TransferManager:
 				# Non-folder: still perform any remote cleanup protocol recorded
 				proto.cleanup(st)
 			self._emit(opts, f"[+] Transfer complete: {final_msg}")
+
+		except (ConnectionError, ConnectionResetError, BrokenPipeError, OSError) as e:
+            st.status = "paused"
+            self.store.save(st)
+            self._emit(opts, f"[{st.tid}] connection lost ({e.__class__.__name__}); paused at chunk {st.next_index}", color=brightred, override_quiet=True)
+
 		except Exception as e:
 			st.status = "error"
 			st.error = f"{e}"
@@ -483,6 +493,10 @@ class TransferManager:
 
 	def _run_upload(self, proto: ShellProtocol, st: TransferState, opts: TransferOpts, stop: threading.Event):
 		try:
+			if st.status != "running":
+				st.status = "running"
+				self.store.save(st)
+
 			# --- Align remote file to whole-chunk boundary before (re)starting ---
 			try:
 				# If remote exists, compute how many full chunks it already has
@@ -555,11 +569,15 @@ class TransferManager:
 							else:
 								tcp_exec.run_command_tcp(st.sid, sh, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None))
 						st.bytes_done = min(safe_bytes, st.total_bytes)
+
+					except Exception:
+						pass
+						
 					finally:
 						st.next_index = pre_idx
 						st.status = "paused"
 						self.store.save(st)
-					self._emit(opts, f"[{st.tid}] connection lost ({neterr.__class__.__name__}); paused at chunk {st.next_index}", color=brightred, override_quiet=True)
+					self._emit(opts, f"[{st.tid}] connection lost ({neterr.__class__.__name__}); paused at chunk {st.next_index}", color=brightred, override_quiet=True, world_wide=True)
 					return
 
 				if idx is None:
@@ -631,11 +649,18 @@ class TransferManager:
 			else:
 				self._emit(opts, "\n[+] Upload complete")
 
+		except (ConnectionError, ConnectionResetError, BrokenPipeError, OSError) as e:
+			# Belt & suspenders: if anything bubbled out, treat it as a pause.
+			st.status = "paused"
+			self.store.save(st)
+			self._emit(opts, f"[{st.tid}] connection lost ({e.__class__.__name__}); paused at chunk {st.next_index}", color=brightred, override_quiet=True, world_wide=True)
+			return
+
 		except Exception as e:
 			st.status = "error"
 			st.error = f"{e}"
 			self.store.save(st)
-			self._emit(opts, f"[!] Transfer error {st.tid}: {e}", color=brightred, override_quiet=True)
+			self._emit(opts, f"[!] Transfer error {st.tid}: {e}", color=brightred, override_quiet=True, world_wide=True)
 
 	# control plane
 	def resume(self, sid: str, tid: str, opts: Optional[TransferOpts]=None) -> bool:
@@ -643,6 +668,10 @@ class TransferManager:
 		st = self.store.load(sid, tid)
 		if st.status not in ("paused","error"):
 			return False
+
+		# flip to running for immediate, correct UI
+		st.status = "running"
+		self.store.save(st)
 
 		# restart appropriate runner
 		stop = threading.Event()
@@ -754,7 +783,7 @@ class TransferManager:
 		ab_root = os.path.abspath(root)
 		ab_path = os.path.abspath(path)
 		if not ab_path.startswith(ab_root + os.sep) and ab_path != ab_root:
-			logger.exception(brightred + f"Unsafe path in archive: {path}" + reset)
+			logger.warning(brightred + f"Unsafe path in archive: {path}" + reset)
 			raise RuntimeError(f"Unsafe path in archive: {path}")
 
 	# --- Path helpers ---------------------------------------------------------
@@ -806,10 +835,10 @@ class TransferManager:
 		if "FILE" in out:
 			return False
 		if "MISSING" in out:
-			logger.exception(brightred + "Remote path does not exist" + reset)
+			logger.warning(brightred + "Remote path does not exist" + reset)
 			raise RuntimeError("Remote path does not exist")
 		# Unknown – be defensive
-		logger.exception(brightred + f"Unrecognized probe result: {out!r}" + reset)
+		logger.warning(brightred + f"Unrecognized probe result: {out!r}" + reset)
 		raise RuntimeError(f"Unrecognized probe result: {out!r}")
 
 	def _run_remote(self, sid: str, cmd: str, transport: str, to_op: Optional[str]) -> str:

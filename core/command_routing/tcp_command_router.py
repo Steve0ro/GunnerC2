@@ -39,7 +39,8 @@ class TcpCommandRouter:
 				timeout: float = None,
 				portscan_active: bool = False,
 				retries: int = 0,
-				defender_bypass: bool = False) -> str:
+				defender_bypass: bool = False,
+				transfer_use: bool = False) -> str:
 		"""
 		Atomically run send+receive under a session-wide lock.
 		Ensures two operators never interleave on the same socket.
@@ -61,7 +62,8 @@ class TcpCommandRouter:
 				self.send(cmd, op_id=op_id, defender_bypass=defender_bypass)
 			except Exception as e:
 				logger.warning("[%s] execute.send() error: %s", time.strftime("%H:%M:%S"), e)
-				raise ConnectionError(f"send failed: {e}") from e
+				if transfer_use:
+					raise ConnectionError(f"send failed: {e}") from e
 				
 
 			# receive and normalize
@@ -75,7 +77,8 @@ class TcpCommandRouter:
 				)
 			except Exception as e:
 				logger.warning("[%s] execute.receive() error: %s", time.strftime("%H:%M:%S"), e)
-				raise ConnectionError(f"receive failed: {e}") from e
+				if transfer_use:
+					raise ConnectionError(f"receive failed: {e}") from e
 				
 
 			elapsed = time.time() - start_ts
@@ -109,7 +112,8 @@ class TcpCommandRouter:
 
 	def send(self, cmd: str,
 			 op_id: str = "console",
-			 defender_bypass: bool = False):
+			 defender_bypass: bool = False,
+			 transfer_use: bool = False):
 		"""
 		Wrap command with start/end tokens, apply defender, send over socket.
 		Raises PermissionError if blocked by defender.
@@ -150,7 +154,8 @@ class TcpCommandRouter:
 
 			except (ConnectionResetError, BrokenPipeError, OSError) as e:
 				logger.warning(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
-				raise ConnectionError(f"socket send failed: {e}") from e
+				if transfer_use:
+					raise ConnectionError(f"socket send failed: {e}") from e
 					
 
 			except Exception as e:
@@ -192,6 +197,9 @@ class TcpCommandRouter:
 					break
 				except (ConnectionResetError, BrokenPipeError, OSError):
 					logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
+					if transfer_use:
+						raise ConnectionError("Connection Error in TCP reader function")
+
 					break
 				if not data:
 					break
@@ -206,8 +214,14 @@ class TcpCommandRouter:
 			old_to = self.sock.gettimeout()
 			self.sock.settimeout(timeout)
 
-		reader = threading.Thread(target=_reader, daemon=True)
-		reader.start()
+		try:
+			reader = threading.Thread(target=_reader, daemon=True).start()
+
+		except (ConnectionResetError, BrokenPipeError, OSError, ConnectionError) as e:
+			logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
+			if transfer_use:
+				raise ConnectionError("Connection Error while reading data over TCP socket")
+				
 		reader.join()
 
 		# Restore timeout

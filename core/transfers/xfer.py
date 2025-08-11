@@ -434,7 +434,7 @@ def cmd_status(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console:
 	return True
 
 
-def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console: bool = True, to_op: Optional[str] = None) -> bool:
+def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console: bool = True, to_op: Optional[str] = None, timeout: float = None) -> bool:
 	"""
 	xfer resume -t <tid|prefix> [-i SID]
 	"""
@@ -445,6 +445,12 @@ def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console:
 	except Exception:
 		_emit(f"[!] Invalid session or alias: {raw_sid}", to_console, to_op, override_quiet=True)
 		return False
+
+	if sid_hint:
+		session = session_manager.sessions[sid_hint]
+		if session.transport.lower() in ("http", "https") and not timeout:
+			_emit(f"You must specify a timeout for HTTP/HTTPS transfers (Use 2x your interval, 3x if jitter is big)", to_console, to_op, color=brightyellow, override_quiet=True)
+			return False
 
 	# 1) Does this TID/prefix exist anywhere?
 	any_matches = _find_tid_anywhere(tm, tid_or_prefix)
@@ -468,7 +474,7 @@ def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console:
 			tm.store.save(st)
 		except Exception:
 			pass
-		ok = tm.resume(sid, st0["tid"], opts=TransferOpts(to_console=to_console, to_op=to_op))
+		ok = tm.resume(sid, st0["tid"], opts=TransferOpts(to_console=to_console, to_op=to_op), timeout=timeout)
 		if ok:
 			_emit(f"[*] Resuming TID={st0['tid']} for session {sid}", to_console, to_op, color=brightgreen, override_quiet=True)
 			return True
@@ -499,7 +505,7 @@ def cmd_resume(tid_or_prefix: str, raw_sid: Optional[str] = None, *, to_console:
 		except Exception:
 			pass
 
-		ok = tm.resume(sid_hint, real_tid, opts=TransferOpts(to_console=to_console, to_op=to_op))
+		ok = tm.resume(sid_hint, real_tid, opts=TransferOpts(to_console=to_console, to_op=to_op), timeout=timeout)
 		if ok:
 			_emit(f"[*] Rebound and resuming TID={real_tid} for session {sid_hint}", to_console, to_op)
 			return True

@@ -17,26 +17,6 @@ brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 reset = Style.RESET_ALL
 
-def _run_cmd(sid: str, cmd: str, transport: str, op_id: Optional[str]) -> str:
-	"""
-	Route command to the correct execution path and return stdout as string (normalized).
-	"""
-	tr = transport.lower()
-	try:
-		out = (http_exec.run_command_http(sid, cmd, op_id=op_id) if tr in ("http","https") 
-			else tcp_exec.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id))
-
-	except Exception as e:
-		# Normalize into a connection error for the transfer manager.
-		raise ConnectionError(str(e))
-
-	out = (out or "")
-	# Some older paths may return operator-formatted error lines instead of raising.
-	if out.lstrip().startswith("[!]") or "Error:" in out:
-		raise ConnectionError(out.strip())
-		
-	return out
-
 def _b64_to_bytes(s: str) -> bytes:
 	# strip whitespace/newlines safely
 	s = "".join(s.split())
@@ -63,8 +43,29 @@ class ShellProtocol(TransferProtocol):
 	- Windows: PowerShell FileStream for both directions
 	Supports: resumable, chunked transfers; folder via remote archive (zip/tar.gz)
 	"""
-	def __init__(self, op_id: Optional[str] = None):
+	def __init__(self, op_id: Optional[str] = None, timeout: float = None):
 		self.op_id = op_id
+		self.timeout = timeout
+
+	def _run_cmd(self, sid: str, cmd: str, transport: str, op_id: Optional[str]) -> str:
+		"""
+		Route command to the correct execution path and return stdout as string (normalized).
+		"""
+		tr = transport.lower()
+		try:
+			out = (http_exec.run_command_http(sid, cmd, op_id=op_id, transfer_use=True, timeout=self.timeout) if tr in ("http","https") 
+				else tcp_exec.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id, transfer_use=True))
+
+		except Exception as e:
+			# Normalize into a connection error for the transfer manager.
+			raise ConnectionError(str(e))
+
+		out = (out or "")
+		# Some older paths may return operator-formatted error lines instead of raising.
+		if out.lstrip().startswith("[!]") or "Error:" in out:
+			raise ConnectionError(out.strip())
+		
+		return out
 
 	# ---------- helpers ----------
 	def _remote_size(self, st: TransferState) -> int:
@@ -79,7 +80,7 @@ class ShellProtocol(TransferProtocol):
 				"else echo -1; fi\""
 			)
 			try:
-				out = (_run_cmd(st.sid, sh, st.transport, self.op_id) or "").strip()
+				out = (self._run_cmd(st.sid, sh, st.transport, self.op_id) or "").strip()
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in remote size grabber: {e}")
@@ -105,7 +106,7 @@ class ShellProtocol(TransferProtocol):
 				"if ($null -eq $i) { '-1' } else { $i.Length }"
 			)
 			try:
-				out = (_run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip()
+				out = (self._run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip()
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in remote size grabber: {e}")
@@ -130,7 +131,7 @@ class ShellProtocol(TransferProtocol):
 		bs = st.chunk_size
 		cmd = f"dd if={_linux_shq(st.remote_path)} bs={bs} skip={index} count=1 status=none | base64"
 		try:
-			out = _run_cmd(st.sid, cmd, st.transport, self.op_id)
+			out = self._run_cmd(st.sid, cmd, st.transport, self.op_id)
 
 		except Exception as e:
 			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
@@ -153,7 +154,7 @@ class ShellProtocol(TransferProtocol):
 			"[Convert]::ToBase64String($buf,0,$read)"
 		)
 		try:
-			out = _run_cmd(st.sid, ps, st.transport, self.op_id)
+			out = self._run_cmd(st.sid, ps, st.transport, self.op_id)
 
 		except Exception as e:
 			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
@@ -175,7 +176,7 @@ class ShellProtocol(TransferProtocol):
 			f"dd of={_linux_shq(st.remote_path)} bs=1M seek={offset} conv=notrunc status=none\""
 		)
 		try:
-			out = _run_cmd(st.sid, cmd, st.transport, self.op_id)
+			out = self._run_cmd(st.sid, cmd, st.transport, self.op_id)
 
 		except Exception as e:
 			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
@@ -201,7 +202,7 @@ class ShellProtocol(TransferProtocol):
 		)
 		# IMPORTANT: send the snippet directly; do NOT wrap with 'powershell -Command ...'
 		try:
-			_run_cmd(st.sid, ps, st.transport, self.op_id)
+			self._run_cmd(st.sid, ps, st.transport, self.op_id)
 
 		except Exception as e:
 			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
@@ -222,7 +223,7 @@ class ShellProtocol(TransferProtocol):
 				if st.os_type == "windows":
 					ps = f"(Test-Path -LiteralPath {_ps_quote(opt['archive_path'])})"
 					try:
-						exists = (_run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip().lower() == "true"
+						exists = (self._run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip().lower() == "true"
 
 					except Exception as e:
 						logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
@@ -231,7 +232,7 @@ class ShellProtocol(TransferProtocol):
 				else:
 					sh = f"bash -lc 'test -f {_linux_shq(opt['archive_path'])} && echo OK || echo NO'"
 					try:
-						exists = "OK" in (_run_cmd(st.sid, sh, st.transport, self.op_id) or "")
+						exists = "OK" in (self._run_cmd(st.sid, sh, st.transport, self.op_id) or "")
 
 					except Exception as e:
 						logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
@@ -258,7 +259,7 @@ class ShellProtocol(TransferProtocol):
 			# Remove any existing archive; CreateFromDirectory will fail if it exists.
 			rm = f"if (Test-Path {_ps_quote(remote_zip)}) {{ Remove-Item {_ps_quote(remote_zip)} -Force }}"
 			try:
-				_run_cmd(st.sid, rm, st.transport, self.op_id)
+				self._run_cmd(st.sid, rm, st.transport, self.op_id)
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
@@ -270,7 +271,7 @@ class ShellProtocol(TransferProtocol):
 				"[IO.Compression.CompressionLevel]::Optimal,$false)"
 			)
 			try:
-				out = _run_cmd(st.sid, zip_cmd, st.transport, self.op_id)
+				out = self._run_cmd(st.sid, zip_cmd, st.transport, self.op_id)
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
@@ -282,7 +283,7 @@ class ShellProtocol(TransferProtocol):
 			)
 			for _ in range(30):
 				try:
-					sz = (_run_cmd(st.sid, size_ps, st.transport, self.op_id) or "").strip()
+					sz = (self._run_cmd(st.sid, size_ps, st.transport, self.op_id) or "").strip()
 
 				except Exception as e:
 					logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
@@ -300,8 +301,8 @@ class ShellProtocol(TransferProtocol):
 			# Save fingerprint + mark prepared
 			mtime_ps = f"(Get-Item {_ps_quote(remote_zip)}).LastWriteTimeUtc.Ticks"
 			try:
-				mtime = _parse_int(_run_cmd(st.sid, mtime_ps, st.transport, self.op_id))
-				length = _parse_int(_run_cmd(st.sid, size_ps,   st.transport, self.op_id))
+				mtime = _parse_int(self._run_cmd(st.sid, mtime_ps, st.transport, self.op_id))
+				length = _parse_int(self._run_cmd(st.sid, size_ps,   st.transport, self.op_id))
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
@@ -316,9 +317,9 @@ class ShellProtocol(TransferProtocol):
 		else:
 			remote_tar = f"/tmp/{base}.tar.gz"
 			try:
-				_run_cmd(st.sid, f"rm -f {_linux_shq(remote_tar)}", st.transport, self.op_id)
+				self._run_cmd(st.sid, f"rm -f {_linux_shq(remote_tar)}", st.transport, self.op_id)
 				tar_cmd = f"tar czf {_linux_shq(remote_tar)} -C {_linux_shq(st.remote_path)} ."
-				_run_cmd(st.sid, tar_cmd, st.transport, self.op_id)
+				self._run_cmd(st.sid, tar_cmd, st.transport, self.op_id)
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
@@ -331,8 +332,8 @@ class ShellProtocol(TransferProtocol):
 			size_sh = f"bash -lc 'stat -c %s {_linux_shq(remote_tar)}'"
 			mtime_sh = f"bash -lc 'stat -c %Y {_linux_shq(remote_tar)}'"
 			try:
-				length = _parse_int(_run_cmd(st.sid, size_sh,  st.transport, self.op_id))
-				mtime  = _parse_int(_run_cmd(st.sid, mtime_sh, st.transport, self.op_id))
+				length = _parse_int(self._run_cmd(st.sid, size_sh,  st.transport, self.op_id))
+				mtime  = _parse_int(self._run_cmd(st.sid, mtime_sh, st.transport, self.op_id))
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
@@ -468,6 +469,6 @@ class ShellProtocol(TransferProtocol):
 	def cleanup(self, st: TransferState) -> None:
 		if st.cleanup_remote_cmd:
 			try:
-				_run_cmd(st.sid, st.cleanup_remote_cmd, st.transport, self.op_id)
+				self._run_cmd(st.sid, st.cleanup_remote_cmd, st.transport, self.op_id)
 			except Exception:
 				pass

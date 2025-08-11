@@ -4,6 +4,7 @@ import fnmatch
 import uuid
 import threading
 import signal
+from typing import Dict
 from colorama import init, Fore, Style
 
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -232,3 +233,4 @@ def is_tcp_session(sid):
 
     else:
         print(brightred + f"[-] ERROR an unknown error has ocurred!")
+        return False

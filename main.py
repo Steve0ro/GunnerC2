@@ -267,16 +267,18 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				parser.add_argument("-i", required=True, help="Session ID or alias (supports wildcards)")
 				parser.add_argument("-f", required=True, help="Remote file or folder path")
 				parser.add_argument("-o", required=True, help="Local output file or directory")
+				parser.add_argument("-t", "--timeout", dest="timeout", required=False, default=None, help="Timeout per chunk for your transfer")
 				parser.add_argument("--chunk", type=int, default=262144, required=False, help="Chunk size (bytes)")
 					
 				try:
 					parsed_args = parser.parse_args(args[1:])
 
 				except SystemExit:
-					print(brightyellow + "Usage: download -i <session_id> -f <remote> -o <local> [--chunk N] [--folder]")
+					print(brightyellow + "Usage: download -i <session_id> -f <remote> -o <local> [--chunk N] [--timeout S]")
 					return
 
 			except Exception as e:
+				logger.exception(f"Hit an exception in download parsing: {e}")
 				return
 
 			#sid = parsed_args.i
@@ -289,6 +291,14 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				return
 
 			session = session_manager.sessions[sid]
+
+			if session.transport.lower() in ("http", "https") and not parsed_args.timeout:
+				print(brightyellow + f"You must specify a timeout for HTTP/HTTPS transfers (Use 2x your interval, 3x if jitter is big)")
+				return
+
+			if parsed_args.timeout:
+				timeout = parsed_args.timeout
+
 			meta = session.metadata
 			operatingsystem = meta.get("os", "").lower()
 
@@ -317,7 +327,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				remote_path=remote_path,
 				local_path=local_out,
 				folder=None,  # auto-detect remotely
-				opts=TransferOpts(chunk_size=parsed_args.chunk, to_console=to_console, to_op=to_op)
+				opts=TransferOpts(chunk_size=parsed_args.chunk, to_console=to_console, to_op=to_op),
+				timeout=timeout
 			)
 			print(brightyellow + f"[*] TID={tid} (use: xfer status -t {tid} | xfer resume -t {tid})")
 
@@ -338,11 +349,12 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser.add_argument("-i", required=True, help="Session ID or alias (supports wildcards)")
 			parser.add_argument("-l", required=True, help="Local file or folder path")
 			parser.add_argument("-r", required=True, help="Remote destination file or directory")
+			parser.add_argument("-t", "--timeout", dest="timeout", required=False, default=None, help="Timeout per chunk for your transfer")
 			parser.add_argument("--chunk", type=int, default=262144, required=False, help="Chunk size (bytes)")
 			try:
 				parsed_args = parser.parse_args(args[1:])
 			except SystemExit:
-				print(brightyellow + "Usage: upload -i <session_id> -l <local> -r <remote> [--chunk N]")
+				print(brightyellow + "Usage: upload -i <session_id> -l <local> -r <remote> [--chunk N] [--timeout S]")
 				return
 
 			# Resolve SID/alias
@@ -357,6 +369,13 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			if not session:
 				print(brightred + f"Invalid session or alias: {parsed_args.i}")
 				return
+
+			if session.transport.lower() in ("http", "https") and not parsed_args.timeout:
+				print(brightyellow + f"You must specify a timeout for HTTP/HTTPS transfers (Use 2x your interval, 3x if jitter is big)")
+				return
+
+			if parsed_args.timeout:
+				timeout = parsed_args.timeout
 
 			# Pull OS/type for remote path normalization hints
 			meta = session.metadata
@@ -385,7 +404,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				local_path=local_path,
 				remote_path=remote_path,
 				folder=is_folder,
-				opts=TransferOpts(chunk_size=parsed_args.chunk, to_console=to_console, to_op=to_op)
+				opts=TransferOpts(chunk_size=parsed_args.chunk, to_console=to_console, to_op=to_op),
+				timeout=timeout
 			)
 			# UX parity with download
 			print(brightyellow + f"[*] TID={tid} (use: xfer status -t {tid} | xfer resume -t {tid})")
@@ -441,11 +461,20 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				return
 
 			def _parse_tid(cmdname: str):
-				p = SilentParser(prog=f"xfer {cmdname}", add_help=False)
-				p.add_argument("-t", required=True)
-				p.add_argument("-i", required=False)
+				if cmdname == "resume":
+					p = SilentParser(prog=f"xfer {cmdname}", add_help=False)
+					p.add_argument("-t", required=True)
+					p.add_argument("-i", required=False)
+					p.add_argument("--timeout", required=False, default=None, dest="timeout")
+
+				else:
+					p = SilentParser(prog=f"xfer {cmdname}", add_help=False)
+					p.add_argument("-t", required=True)
+					p.add_argument("-i", required=False)
+
 				try:
 					return p.parse_args(rest)
+
 				except SystemExit:
 					_usage()
 					return None
@@ -461,7 +490,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				ns = _parse_tid("resume")
 				if ns is None:
 					return
-				xcmd.cmd_resume(ns.t, getattr(ns, "i", None), to_console=to_console, to_op=to_op)
+				xcmd.cmd_resume(ns.t, getattr(ns, "i", None), to_console=to_console, to_op=to_op, timeout=ns.timeout)
 				return
 
 			if sub == "cancel":
@@ -616,7 +645,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				utils.print_help("start https", False)
 				return
 
-			threading.Thread(target=create_listener, args=(parsed.ip, parsed.port, "https", to_console, to_op, None), daemon=True).start()
+			threading.Thread(target=create_listener, args=(parsed.ip, parsed.port, "https", to_console, to_op, None, parsed.certfile, parsed.keyfile), daemon=True).start()
 			return
 
 		except Exception:
@@ -842,8 +871,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser = SilentParser(prog="generate (tcp)", add_help=False)
 			parser.add_argument("-f", "--format", choices=["ps1", "bash", "shellcode", "exe"], required=True)
 			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
-			parser.add_argument("-p", "--payload", choices=["tcp"], required=True)
 			parser.add_argument("-o", "--output", required=False)
+			parser.add_argument("-p", "--payload", choices=["tcp"], required=True)
 			parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
 			parser.add_argument("-lh", "--local_host", required=True)
 			parser.add_argument("-lp", "--local_port", required=True)
@@ -854,8 +883,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser = SilentParser(prog="generate (tls)", add_help=False)
 			parser.add_argument("-f", "--format", choices=["ps1", "bash", "shellcode", "exe"], required=True)
 			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
-			parser.add_argument("-p", "--payload", choices=["tls"], required=True)
 			parser.add_argument("-o", "--output", required=False)
+			parser.add_argument("-p", "--payload", choices=["tls"], required=True)
 			parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
 			parser.add_argument("-lh", "--local_host", required=True)
 			parser.add_argument("-lp", "--local_port", required=True)
@@ -866,8 +895,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser = SilentParser(prog="generate (http)", add_help=False)
 			parser.add_argument("-f", "--format", choices=["ps1", "bash", "exe"], required=True)
 			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1, 2, 3], default=False, required=False)
-			parser.add_argument("-p", "--payload", choices=["http"], required=True)
 			parser.add_argument("-o", "--output", required=False)
+			parser.add_argument("-p", "--payload", choices=["http"], required=True)
 			parser.add_argument("--profile", dest="profile", help="Path to malleable C2 profile (.profile)", required=False, default=False)
 			parser.add_argument("--jitter", type=int, default=0, help="Jitter percentage to randomize beacon interval (e.g., 30 = ±30%)")
 			parser.add_argument("-H", "--headers", dest="headers", action="append", type=malleable.parse_headers, help="Custom HTTP header; either 'Name: Value' or JSON dict")
@@ -885,8 +914,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser = SilentParser(prog="generate (https)", add_help=False)
 			parser.add_argument("-f", "--format", choices=["ps1", "bash"], required=True)
 			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1,2,3], default=False, required=False)
-			parser.add_argument("-p", "--payload", choices=["https"], required=True)
 			parser.add_argument("-o", "--output", required=False)
+			parser.add_argument("-p", "--payload", choices=["https"], required=True)
 			parser.add_argument("--profile", dest="profile", help="Path to malleable C2 profile (.profile)", required=False, default=False)
 			parser.add_argument("--jitter", type=int, default=0, help="Jitter percentage to randomize beacon interval (e.g., 30 = ±30%)")
 			parser.add_argument("-H", "--headers", dest="headers", action="append", type=malleable.parse_headers, help="Custom HTTP header; either 'Name: Value' or JSON dict")

@@ -12,7 +12,8 @@ def run_command_tcp(sid: str,
 					defender_bypass: bool = False,
 					portscan_active: bool = False,
 					retries: int = 0,
-					op_id: str = "console") -> str | None:
+					op_id: str = "console",
+					transfer_use: bool = False) -> str | None:
 	"""
 	Execute `cmd` over a TCP/TLS session identified by `sid`.
 	Uses TcpCommandRouter for modular send/receive.
@@ -35,13 +36,16 @@ def run_command_tcp(sid: str,
 			timeout=timeout,
 			portscan_active=portscan_active,
 			retries=retries,
-			defender_bypass=defender_bypass
+			defender_bypass=defender_bypass,
+			transfer_use=transfer_use
 		)
 
 	except queue.Empty as e:
 		logger.debug("TCP execute timeout for sid=%r, op_id=%r", sid, op_id)
-		raise ConnectionError(str(e)) from e
+		if transfer_use:
+			raise ConnectionError(str(e)) from e
 		
 	except Exception as e:
 		logger.warning("Error in TCP execute for sid=%r, op_id=%r: %s", sid, op_id, e)
-		raise ConnectionError(str(e)) from e
+		if transfer_use:
+			raise ConnectionError(str(e)) from e

@@ -37,9 +37,9 @@ class TransferManager:
 		self._lock = threading.RLock()
 
 	# ---------- helpers ----------
-	def _protocol(self, op_id: Optional[str]) -> ShellProtocol:
+	def _protocol(self, op_id: Optional[str], timeout: float = None) -> ShellProtocol:
 		# For now we only ship the ShellProtocol (works over HTTP/TCP/TLS).
-		return ShellProtocol(op_id)
+		return ShellProtocol(op_id, timeout=timeout)
 
 	def _new_tid(self) -> str:
 		return uuid.uuid4().hex[:12]
@@ -136,7 +136,7 @@ class TransferManager:
 		st.is_folder = False
 
 	# ---------- public API ----------
-	def start_download(self, sid: str, remote_path: str, local_path: str, folder: Optional[bool]=None, opts: Optional[TransferOpts]=None) -> str:
+	def start_download(self, sid: str, remote_path: str, local_path: str, folder: Optional[bool]=None, opts: Optional[TransferOpts]=None, timeout: float = None) -> str:
 		opts = opts or TransferOpts()
 		# For folder downloads, choose an archive file path and record extraction target
 		sess = session_manager.sessions[sid]
@@ -184,19 +184,19 @@ class TransferManager:
 			target_file = self._resolve_file_target(local_path, remote_path)
 			st = self._mk_state("download", sid, remote_path, target_file, False, opts)
 
-		proto = self._protocol(opts.to_op)
+		proto = self._protocol(opts.to_op, timeout=timeout)
 		st = proto.init_download(st)
 		st.total_chunks = chunk_count(st.total_bytes, st.chunk_size)
 		self.store.save(st)
 		stop = threading.Event()
 		self._stop_flags[st.tid] = stop
-		t = threading.Thread(target=self._run_download, args=(proto, st, opts, stop), daemon=True)
+		t = threading.Thread(target=self._run_download, args=(proto, st, opts, stop, timeout), daemon=True)
 		t.start()
 		self._threads[st.tid] = t
 		self._emit(opts, f"[*] Transfer started (download) TID={st.tid} → {st.local_path}")
 		return st.tid
 
-	def _run_download(self, proto: ShellProtocol, st: TransferState, opts: TransferOpts, stop: threading.Event):
+	def _run_download(self, proto: ShellProtocol, st: TransferState, opts: TransferOpts, stop: threading.Event, timeout: float = None):
 		try:
 			if st.status != "running":
 				st.status = "running"
@@ -364,9 +364,9 @@ class TransferManager:
 			self._emit(opts, f"[+] Transfer complete: {final_msg}")
 
 		except (ConnectionError, ConnectionResetError, BrokenPipeError, OSError) as e:
-            st.status = "paused"
-            self.store.save(st)
-            self._emit(opts, f"[{st.tid}] connection lost ({e.__class__.__name__}); paused at chunk {st.next_index}", color=brightred, override_quiet=True)
+			st.status = "paused"
+			self.store.save(st)
+			self._emit(opts, f"[{st.tid}] connection lost ({e.__class__.__name__}); paused at chunk {st.next_index}", color=brightred, override_quiet=True)
 
 		except Exception as e:
 			st.status = "error"
@@ -374,7 +374,7 @@ class TransferManager:
 			self.store.save(st)
 			self._emit(opts, f"[!] Transfer error {st.tid}: {e}", color=brightred, override_quiet=True)
 
-	def start_upload(self, sid: str, local_path: str, remote_path: str, folder: bool, opts: Optional[TransferOpts]=None) -> str:
+	def start_upload(self, sid: str, local_path: str, remote_path: str, folder: bool, opts: Optional[TransferOpts]=None, timeout: float = None) -> str:
 		opts = opts or TransferOpts()
 		# Normalize Windows remote path slashes if needed *before* creating state
 		sess = session_manager.sessions[sid]
@@ -466,32 +466,32 @@ class TransferManager:
 			)
 			tcp_or_http = session_manager.sessions[sid].transport.lower()
 			if tcp_or_http in ("http","https"):
-				http_exec.run_command_http(sid, ps, op_id=getattr(opts, "to_op", None))
+				http_exec.run_command_http(sid, ps, op_id=getattr(opts, "to_op", None), transfer_use=True, timeout=timeout)
 			else:
-				tcp_exec.run_command_tcp(sid, ps, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None))
+				tcp_exec.run_command_tcp(sid, ps, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None), transfer_use=True)
 		else:
 			parent = os.path.dirname(st.remote_path.rstrip("/")) or st.remote_path.rstrip("/")
 			sh = f"bash -lc \"mkdir -p {_linux_shq(parent)}\""
 			tcp_or_http = session_manager.sessions[sid].transport.lower()
 			if tcp_or_http in ("http","https"):
-				http_exec.run_command_http(sid, sh, op_id=getattr(opts, "to_op", None))
+				http_exec.run_command_http(sid, sh, op_id=getattr(opts, "to_op", None), transfer_use=True, timeout=timeout)
 			else:
-				tcp_exec.run_command_tcp(sid, sh, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None))
+				tcp_exec.run_command_tcp(sid, sh, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None), transfer_use=True)
 		total = os.path.getsize(st.local_path)
 		st.total_bytes  = total
 		st.total_chunks = chunk_count(total, st.chunk_size)
-		proto = self._protocol(opts.to_op)
+		proto = self._protocol(opts.to_op, timeout=timeout)
 		st = proto.init_upload(st)
 		self.store.save(st)
 		stop = threading.Event()
 		self._stop_flags[st.tid] = stop
-		t = threading.Thread(target=self._run_upload, args=(proto, st, opts, stop), daemon=True)
+		t = threading.Thread(target=self._run_upload, args=(proto, st, opts, stop, timeout), daemon=True)
 		t.start()
 		self._threads[st.tid] = t
 		self._emit(opts, f"[*] Transfer started (upload) TID={st.tid} → {st.remote_path}")
 		return st.tid
 
-	def _run_upload(self, proto: ShellProtocol, st: TransferState, opts: TransferOpts, stop: threading.Event):
+	def _run_upload(self, proto: ShellProtocol, st: TransferState, opts: TransferOpts, stop: threading.Event, timeout: float = None):
 		try:
 			if st.status != "running":
 				st.status = "running"
@@ -522,16 +522,16 @@ class TransferManager:
 						)
 						tcp_or_http = session_manager.sessions[st.sid].transport.lower()
 						if tcp_or_http in ("http","https"):
-							http_exec.run_command_http(st.sid, ps, op_id=getattr(opts, "to_op", None))
+							http_exec.run_command_http(st.sid, ps, op_id=getattr(opts, "to_op", None), transfer_use=True, timeout=timeout)
 						else:
-							tcp_exec.run_command_tcp(st.sid, ps, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None))
+							tcp_exec.run_command_tcp(st.sid, ps, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None), transfer_use=True)
 					else:
 						sh = f"bash -lc \"truncate -s {full_chunks * st.chunk_size} {_linux_shq(st.remote_path)}\""
 						tcp_or_http = session_manager.sessions[st.sid].transport.lower()
 						if tcp_or_http in ("http","https"):
-							http_exec.run_command_http(st.sid, sh, op_id=getattr(opts, "to_op", None))
+							http_exec.run_command_http(st.sid, sh, op_id=getattr(opts, "to_op", None), transfer_use=True, timeout=timeout)
 						else:
-							tcp_exec.run_command_tcp(st.sid, sh, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None))
+							tcp_exec.run_command_tcp(st.sid, sh, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None), transfer_use=True)
 					rsz = full_chunks * st.chunk_size
 				# Snap our local counters to match remote
 				st.next_index = full_chunks
@@ -558,16 +558,16 @@ class TransferManager:
 							)
 							tcp_or_http = session_manager.sessions[st.sid].transport.lower()
 							if tcp_or_http in ("http","https"):
-								http_exec.run_command_http(st.sid, ps, op_id=getattr(opts, "to_op", None))
+								http_exec.run_command_http(st.sid, ps, op_id=getattr(opts, "to_op", None), transfer_use=True, timeout=timeout)
 							else:
-								tcp_exec.run_command_tcp(st.sid, ps, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None))
+								tcp_exec.run_command_tcp(st.sid, ps, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None), transfer_use=True)
 						else:
 							sh = f"bash -lc \"truncate -s {safe_bytes} {_linux_shq(st.remote_path)}\""
 							tcp_or_http = session_manager.sessions[st.sid].transport.lower()
 							if tcp_or_http in ("http","https"):
-								http_exec.run_command_http(st.sid, sh, op_id=getattr(opts, "to_op", None))
+								http_exec.run_command_http(st.sid, sh, op_id=getattr(opts, "to_op", None), transfer_use=True, timeout=timeout)
 							else:
-								tcp_exec.run_command_tcp(st.sid, sh, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None))
+								tcp_exec.run_command_tcp(st.sid, sh, timeout=0.5, portscan_active=True, op_id=getattr(opts, "to_op", None), transfer_use=True)
 						st.bytes_done = min(safe_bytes, st.total_bytes)
 
 					except Exception:
@@ -663,7 +663,7 @@ class TransferManager:
 			self._emit(opts, f"[!] Transfer error {st.tid}: {e}", color=brightred, override_quiet=True, world_wide=True)
 
 	# control plane
-	def resume(self, sid: str, tid: str, opts: Optional[TransferOpts]=None) -> bool:
+	def resume(self, sid: str, tid: str, opts: Optional[TransferOpts]=None, timeout: float = None) -> bool:
 		opts = opts or TransferOpts()
 		st = self.store.load(sid, tid)
 		if st.status not in ("paused","error"):
@@ -676,7 +676,7 @@ class TransferManager:
 		# restart appropriate runner
 		stop = threading.Event()
 		self._stop_flags[tid] = stop
-		proto = self._protocol(opts.to_op)
+		proto = self._protocol(opts.to_op, timeout=timeout)
 		runner = self._run_download if st.direction == "download" else self._run_upload
 		t = threading.Thread(target=runner, args=(proto, st, opts, stop), daemon=True)
 		t.start()
@@ -841,17 +841,17 @@ class TransferManager:
 		logger.warning(brightred + f"Unrecognized probe result: {out!r}" + reset)
 		raise RuntimeError(f"Unrecognized probe result: {out!r}")
 
-	def _run_remote(self, sid: str, cmd: str, transport: str, to_op: Optional[str]) -> str:
+	def _run_remote(self, sid: str, cmd: str, transport: str, to_op: Optional[str], timeout: float = None) -> str:
 		"""
 		Execute a short command on the agent via the appropriate transport and return the output.
 		"""
 		if transport in ("http", "https"):
 			# existing adapter: http_exec.run_command_http(sid, cmd, op_id=...)
-			return http_exec.run_command_http(sid, cmd, op_id=to_op)
+			return http_exec.run_command_http(sid, cmd, op_id=to_op, transfer_use=True, timeout=timeout)
 
 		else:
 			# TCP/TLS paths use TCP adapter
-			return tcp_exec.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=to_op)
+			return tcp_exec.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=to_op, transfer_use=True)
 
 	def _resolve_file_target(self, local_path: str, remote_path: str) -> str:
 		"""

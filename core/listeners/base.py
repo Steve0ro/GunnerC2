@@ -50,7 +50,8 @@ LISTENER_CLASSES: dict[str, type[Listener]] = {}
 listeners: Dict[str, Listener] = {}
 socket_to_listener: Dict[int, str] = {}
 
-def create_listener(ip: str, port: int, transport: str, to_console: bool=True, op_id: str=None, profiles: Optional[dict] = None) -> Listener:
+def create_listener(ip: str, port: int, transport: str, to_console: bool=True, op_id: str=None, profiles: Optional[dict] = None, certfile: str = None,
+	keyfile: str = None) -> Listener:
 	"""
 	Instantiate, start, and register a new Listener subclass
 	for the given transport name. Returns the running instance.
@@ -67,7 +68,12 @@ def create_listener(ip: str, port: int, transport: str, to_console: bool=True, o
 	# Store & spin up its thread
 	with _reg_lock:
 		listeners[lid] = inst
-	inst.start(ip, port)
+
+	if transport in ("https"):
+		inst.start(ip, port, certfile=certfile, keyfile=keyfile)
+
+	else:
+		inst.start(ip, port)
 	return inst
  
 

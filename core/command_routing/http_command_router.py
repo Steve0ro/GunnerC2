@@ -6,6 +6,13 @@ from core.utils import defender, normalize_output
 
 logger = logging.getLogger(__name__)
 
+from colorama import init, Fore, Style
+brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
+brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
+brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
+reset = Style.RESET_ALL
+
 class CommandRouter:
 	"""
 	Encapsulates per-operator command enqueueing and response dequeueing.
@@ -36,7 +43,7 @@ class CommandRouter:
 			before_res, len(self.session.merge_response_queue)
 		)
 
-	def send(self, cmd: str, op_id: str = "console", defender_bypass: bool = False):
+	def send(self, cmd: str, op_id: str = "console", defender_bypass: bool = False, transfer_use: bool = False):
 		"""
 		Apply Session-Defender, base64-encode cmd, then enqueue it.
 		Raises PermissionError if defender blocks it.
@@ -75,7 +82,14 @@ class CommandRouter:
 			time.strftime("%H:%M:%S"), op_id, b64_cmd
 		)
 
-		self.session.merge_command_queue[op_id].put(b64_cmd)
+		try:
+			self.session.merge_command_queue[op_id].put(b64_cmd)
+
+		except Exception as e:
+			logger.warning(brightred + f"Hit exception while sending in HTTP/HTTPS: {e}" + reset)
+			if transfer_use:
+				raise ConnectionError("Hit ConnectionError while sending over HTTP/HTTPS") from e
+
 		logger.debug(
 			"[%s] Enqueued command for op_id=%r; queue_size=%d",
 			time.strftime("%H:%M:%S"),
@@ -87,7 +101,7 @@ class CommandRouter:
 			"[%s] send() completed in %.4fs", time.strftime("%H:%M:%S"), time.time() - start_ts
 		)
 
-	def receive(self, op_id: str = "console", block: bool = True, timeout: float = None) -> str:
+	def receive(self, op_id: str = "console", block: bool = True, timeout: float = None, transfer_use: bool = False) -> str:
 		"""
 		Dequeue a response (base64) for op_id, decode, and return it.
 		If block=False, raises queue.Empty on no data.
@@ -104,16 +118,20 @@ class CommandRouter:
 
 		if block:
 			out_b64 = q.get(timeout=timeout)
+			
 		else:
 			out_b64 = q.get_nowait()
 
 		try:
 			decoded = base64.b64decode(out_b64).decode("utf-8", "ignore").strip()
 		except Exception as e:
-			logger.exception(
+			logger.warning(
 				"[%s] Failed to decode response for op_id=%r: %s",
 				time.strftime("%H:%M:%S"), op_id, e
 			)
+			if transfer_use:
+				raise ConnectionError("Hit ConnectionError while reading over HTTP/HTTPS") from e
+
 			return ""
 
 		logger.debug(

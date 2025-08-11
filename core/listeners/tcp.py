@@ -268,7 +268,7 @@ class TcpListener(Listener):
 			client.settimeout(0.5)
 			try:
 				while True:
-					junk = lient.recv(1024)
+					junk = client.recv(1024)
 					if not junk:
 						break
 			except:

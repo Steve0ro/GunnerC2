@@ -11,7 +11,7 @@ import threading, socketserver, socket
 import queue
 import argparse
 from itertools import chain, cycle
-from core.listeners import tcp_listener
+from core.listeners import tcp
 import _thread
 from core.session_handlers import session_manager
 
@@ -178,7 +178,7 @@ class SocksProxyCommand(Command):
 
 		def server(proxy_port, handler_port):
 			# generate TLS context using your existing function
-			context = tcp_listener.generate_tls_context("0.0.0.0")
+			context = tcp.generate_tls_context("0.0.0.0")
 			q = queue.Queue()
 
 			# start reverse handler

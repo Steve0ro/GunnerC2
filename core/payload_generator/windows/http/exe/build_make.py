@@ -125,7 +125,7 @@ def dump_templates(tmp: Path, stager_ip: str, stager_port: int):
 
 def build(output_path: Path, payload: str, stager_ip: str, stager_port: int):
 	# 1) Create temp workspace
-	print("IN BUILD")
+	#print("IN BUILD")
 	tempdir = Path(tempfile.mkdtemp(prefix="sc_build_"))
 	try:
 		dump = dump_templates(tempdir, stager_ip, stager_port)

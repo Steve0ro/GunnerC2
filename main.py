@@ -58,7 +58,7 @@ from core.command_execution import tcp_command_execution as tcp_exec
 
 # Listener Imports
 from core.listeners.base import load_listeners, LISTENER_CLASSES, create_listener, stop_listener
-from core.listeners import tcp_listener, https_listener, http_handler
+from core.listeners import tcp, http
 
 # Transfer Framework Imports
 from core.transfers.manager import TransferManager, TransferOpts

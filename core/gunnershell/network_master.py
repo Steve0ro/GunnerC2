@@ -8,7 +8,7 @@ import ipaddress
 import threading, socketserver, socket
 from core.session_handlers import session_manager
 from core import shell
-from core.listeners import tcp_listener
+from core.listeners import tcp
 from core import print_override
 import _thread
 import base64

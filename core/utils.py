@@ -449,7 +449,7 @@ commands = commands
 # -----------------------------------------------------------------------------
 gunnershell_commands = gunnershell_commands
 
-def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None):
+def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerplant=False):
 	"""Like print_help, but grouped and with two‐level detail."""
 	# 1) Top‐level: show grouped summary
 	#builtins.print = print_override._orig_print
@@ -560,6 +560,9 @@ def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None):
 			"getspns":                  "Enumerate all accounts with ServicePrincipalNames (Kerberoastable)",
 			"kerbrute":                 "Bruteforce everything kerberos"
 		}
+
+		if gunnerplant:
+			core_cmds["bofexec"] = "Execute a BOF from library or path"
 
 		# print Core
 		print(brightyellow + "\nCore Commands\n=============\n")

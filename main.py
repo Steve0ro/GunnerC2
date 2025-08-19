@@ -554,13 +554,13 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				def init_gs(operator, to_op):
 					try:
 						gs = Gunnershell(sid, to_op)
-						logger.debug(f"Initialized GS for {to_op}@{sid}: {gs!r}")
+						logger.debug(brightyellow + f"Initialized GS for {to_op}@{sid}: {gs!r}" + reset)
 						operator.shell = "gunnershell"
 						sleep(0.01)
 						operator.gs    = gs
 
 					except Exception as e:
-						logger.exception(f"Error initializing GunnerShell for {to_op}@{sid}: {e}")
+						logger.exception(brightred + f"Error initializing GunnerShell for {to_op}@{sid}: {e}" + reset)
 
 				#fire-and-forget: don’t block the dispatcher
 				threading.Thread(target=init_gs, args=(operator, to_op), daemon=True).start()
@@ -912,7 +912,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 
 		elif payload_type == "https":
 			parser = SilentParser(prog="generate (https)", add_help=False)
-			parser.add_argument("-f", "--format", choices=["ps1", "bash"], required=True)
+			parser.add_argument("-f", "--format", choices=["ps1", "bash", "exe", "gunnerplant"], required=True)
 			parser.add_argument("-obs", "--obfuscation", type=int, choices=[1,2,3], default=False, required=False)
 			parser.add_argument("-o", "--output", required=False)
 			parser.add_argument("-p", "--payload", choices=["https"], required=True)
@@ -925,6 +925,8 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			parser.add_argument("--os", choices=["windows","linux"], default=False, help="Target OS for the payload", required=False)
 			parser.add_argument("-lh", "--local_host", required=True)
 			parser.add_argument("-lp", "--local_port", required=True)
+			parser.add_argument("--stager-ip", dest="stager_ip", help="IP address where the .exe stager will be hosted", required=False)
+			parser.add_argument("--stager-port", dest="stager_port", type=int, help="Port where the .exe stager will listen", required=False)
 			parser.add_argument("--interval", required=True)
 
 		else:
@@ -1013,7 +1015,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			stager_ip = args.stager_ip
 			stager_port = args.stager_port
 
-		if payload_type == "http":
+		if payload_type in ("http", "https"):
 			stager_ip = args.stager_ip
 			stager_port = args.stager_port
 
@@ -1025,7 +1027,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 
 		if not args.os:
 			format_type = args.format.lower()
-			if format_type in ("ps1", "exe", "shellcode"):
+			if format_type in ("ps1", "exe", "shellcode", "gunnerplant"):
 				os_type = "windows"
 
 			elif format_type == "bash":
@@ -1038,7 +1040,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 			except Exception as e:
 				print(brightred + f"[!] The -f argument are required: {e}")
 
-		print(f"IP {stager_ip}, PORT {stager_port}")
+		#print(f"IP {stager_ip}, PORT {stager_port}")
 
 		if os_type == "windows":
 			raw = generate_payload_windows(args.local_host, args.local_port, obfuscation, format_type, payload_type, beacon_interval, headers=all_headers, useragent=useragent, accept=accept, byte_range=byte_range, jitter=jitter,
@@ -1836,6 +1838,7 @@ if __name__ == "__main__":
 						continue
 
 					shell_type = operator.shell
+					logger.debug(brightgreen + f"Operator {op_id} has shell type {shell_type}" + reset)
 
 					set_output_context(to_console=False, to_op=op_id)
 

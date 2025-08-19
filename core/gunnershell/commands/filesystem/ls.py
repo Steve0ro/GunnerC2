@@ -9,7 +9,7 @@ brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 from core.command_execution import http_command_execution as http_exec
 from core.command_execution import tcp_command_execution as tcp_exec
 
-@register("ls")
+@register("ls", "dir")
 class LsCommand(Command):
 	"""List files on the remote host: ls [<path>]"""
 

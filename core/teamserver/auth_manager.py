@@ -1,3 +1,6 @@
+import logging
+logger = logging.getLogger(__name__)
+
 import os, uuid, sqlite3, threading
 import re
 from datetime import datetime
@@ -29,8 +32,22 @@ def _get_conn():
 
         # Trade a little durability for speed
         conn.execute("PRAGMA synchronous=NORMAL;")
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS operators (
+            id           TEXT   PRIMARY KEY,
+            username     TEXT   UNIQUE COLLATE NOCASE,
+            password_hash TEXT  NOT NULL,
+            role         TEXT   NOT NULL,
+            created_at   TEXT   NOT NULL
+        )
+        """)
+        conn.commit()
+
         conn.row_factory = sqlite3.Row
         _thread_local.conn = conn
+
+        reload_cache()
 
     return _thread_local.conn
 
@@ -148,7 +165,8 @@ def startup_useradd():
             )
             return cur.fetchone() is not None
 
-    except sqlite3.Error:
+    except sqlite3.Error as e:
+        logger.debug(f"{e}")
         return False
 
 

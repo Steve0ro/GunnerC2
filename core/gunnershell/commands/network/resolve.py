@@ -10,7 +10,7 @@ brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred   = "\001" + Style.BRIGHT + Fore.RED + "\002"
 
-@register("resolve")
+@register("resolve", "nslookup")
 class ResolveCommand(Command):
 	"""Resolve DNS on target: resolve <hostname>"""
 

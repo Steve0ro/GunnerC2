@@ -10,6 +10,23 @@ gunnershell_commands = {
 	"download":"Usage: download <remote_path> <local_path>  Download a file.",
 	"shell":   "Usage: shell    Drop into a full interactive shell.",
 	"switch": "switch <session_id>   Launch a Gunnershell on another session (can't switch to yourself).",
+	"bofexec": """bofexec <bof_name_or_path> [--x86] [-z STR]... [-Z WSTR]...
+Resolve a BOF from the library or filesystem and request execution (only available when gunnerplant is enabled).
+
+Arguments:
+  bof_name_or_path   Library key (e.g., whoami, x64/whoami) or path to a .o/.obj file
+  --x86              Use the 32-bit variant when the agent/process is x86
+  -z STR             ASCII string argument (repeatable; order preserved)
+  -Z WSTR            Wide/UTF-16LE string argument (repeatable; order preserved)
+
+Examples:
+  bofexec whoami
+  bofexec x64/whoami -z user -Z "DOMAIN\\\\Users"
+  bofexec --x86 whoami
+  bofexec C:\\tools\\bofs\\whoami.o
+  bofexec ./bofs/whoami.o -z arg1 -z arg2 -Z "wide string"
+""",
+
 	"portfwd": {
 		"_desc": """portfwd <subcommand>
 		

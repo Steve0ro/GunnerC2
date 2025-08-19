@@ -18,8 +18,11 @@ from core.payload_generator.windows.http.exe import exe_reverse_http
 from core.payload_generator.windows.http.ps1 import powershell_reverse_http
 
 # Windows HTTPS payloads
-from core.payload_generator.windows.https import powershell_reverse_https
+from core.payload_generator.windows.https.ps1 import powershell_reverse_https
+from core.payload_generator.windows.https.exe import exe_reverse_https
+from core.payload_generator.windows.https.gunnerplant import gunnerplant_reverse_https
 
+# Bash Payloads
 from core.payload_generator.linux.tcp import bash_reverse_tcp
 from core.payload_generator.linux.http import bash_reverse_http
 
@@ -68,6 +71,13 @@ def generate_payload_windows(ip, port, obs, format_type, payload_type, beacon_in
         if format_type == "ps1":
             raw = powershell_reverse_https.generate_windows_powershell_https(ip, port, obs, beacon_interval, headers, useragent, accept=accept, byte_range=byte_range, jitter=jitter, no_child=None, profile=profile)
 
+        elif format_type == "exe":
+            raw = exe_reverse_https.generate_exe_reverse_https(ip, port, obs, beacon_interval, headers, useragent, stager_ip, stager_port,
+                accept=accept, byte_range=byte_range, jitter=jitter, profile=profile)
+
+        elif format_type == "gunnerplant":
+            raw = gunnerplant_reverse_https.generate_gunnerplant_reverse_https(ip, port, obs, beacon_interval, headers, useragent, stager_ip, stager_port,
+                accept=accept, byte_range=byte_range, jitter=jitter, profile=profile)
     if raw:
         return raw
 

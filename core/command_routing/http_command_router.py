@@ -134,6 +134,8 @@ class CommandRouter:
 
 			return ""
 
+		#logger.debug(f"Decoding base64 output: {out_b64}")
+
 		logger.debug(
 			"[%s] Dequeued & decoded response for op_id=%r; remaining_queue=%d: %r",
 			time.strftime("%H:%M:%S"),

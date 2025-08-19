@@ -10,7 +10,7 @@ brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 
-@register("mkdir")
+@register("mkdir", "md")
 class MkdirCommand(Command):
 	"""Create a directory on the remote host: mkdir <path>"""
 

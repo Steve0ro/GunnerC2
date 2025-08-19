@@ -7,6 +7,8 @@ import readline
 import ntpath
 import os, sys
 import re
+import base64
+from pathlib import Path
 import argparse
 from core.module_loader import load_module, discover_module_files, search_modules, MODULE_DIR as BASE_MODULE_DIR
 from core.session_handlers.session_manager import resolve_sid
@@ -28,6 +30,14 @@ from core.prompt_manager import prompt_manager
 
 from core.gunnershell.commands.base import get as get_command, list_commands, load, COMMANDS
 
+# Modular BOF Loader & Library Imports
+
+from core.gunnershell.bofs.base import (
+	load as load_bof_registry,
+	BOFS as BOF_REGISTRY,
+	Bof as BofBase,
+)
+
 # Command Execution Imports
 
 from core.command_execution import http_command_execution as http_exec
@@ -35,7 +45,7 @@ from core.command_execution import tcp_command_execution as tcp_exec
 
 # Helper functions
 
-from core.gunnershell.gunnershell_utils import help_menu
+from core.gunnershell.gunnershell_utils import help_menu, pop_commands, _detect_gunnerplant
 
 # Colorama variables
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -75,6 +85,10 @@ class Gunnershell:
 		display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 		self.sid = real
 		self.display = display
+		self.gunnerplant = False
+		self.bofs_enabled = False
+		self.bof_registry = {}
+		_detect_gunnerplant(gunnershell_class=self, op_id=op_id)
 		self.MAIN_HIST = os.path.expanduser("~/.gunnerc2_history")
 		SESSION_HIST = os.path.expanduser(f"~/.gunnerc2_gs_{self.sid}_history")
 		self.SESSION_HIST = SESSION_HIST
@@ -109,6 +123,18 @@ class Gunnershell:
 		else:
 			logger.debug(brightgreen + f"SUCCESSFULLY INITALIZED GUNNERSHELL FOR SID {sid} as CONSOLE" + reset)
 
+		# Conditionally load BOF registry (no agent execution here)
+		if self.gunnerplant:
+			try:
+				load_bof_registry()
+				self.bof_registry = dict(BOF_REGISTRY)
+				self.bofs_enabled = True
+				logger.debug(brightgreen + f"Loaded {len(self.bof_registry)} BOF provider(s)" + reset)
+			except Exception as e:
+				logger.debug(brightred + f"BOF registry load error: {e}" + reset)
+
+		pop_commands(self)
+
 	def make_abs(self, p):
 		"""
 		Resolve p (which may be relative) against the current working
@@ -130,6 +156,8 @@ class Gunnershell:
 		# simple tab completion: modules and built-in commands
 		try:
 			builtins = list(gunnershell_commands.keys())
+			if not self.gunnerplant and "bofexec" in builtins:
+				builtins.remove("bofexec")
 			options  = [c for c in self.available + builtins if c.startswith(text)]
 			return options[state]
 
@@ -156,7 +184,7 @@ class Gunnershell:
 		module.run()
 
 	def run_pwd(self, to_console=True, op_id=None):
-		cmd_cls = get_command("pwd")
+		cmd_cls, n_consumed = get_command("pwd")
 		if cmd_cls:
 			try:
 				instance = cmd_cls(self, to_console, op_id)
@@ -165,6 +193,80 @@ class Gunnershell:
 			except Exception as e:
 				logger.debug(f"HIT ERROR GETTING CWD ON GS START: {e}")
 				return None
+
+	# ─── BOF Resolution Helper ──────────────────────────────────────────────
+	def _resolve_bof_bytes(self, name_or_path: str):
+		"""
+		Resolution order:
+		  1) If `name_or_path` is a real file, read bytes and return (name, bytes).
+		  2) Else, consult BOF registry (core/gunnershell/bofs/base.py).
+		     If a provider class is registered under that name and has a
+		     class attribute `bofbase64`, decode and return (name, bytes).
+		     (Optional) If no `bofbase64`, but the class defines `load_bytes()`,
+		     call it and return (name, bytes).
+
+		Returns:
+		  (bof_name: str, bof_bytes: bytes) or None if not found/failed.
+		"""
+		# 1) Filesystem
+		try:
+			if os.path.isfile(name_or_path):
+				name = os.path.splitext(os.path.basename(name_or_path))[0]
+				with open(name_or_path, "rb") as f:
+					data = f.read()
+				logger.debug(brightgreen + f"Resolved BOF from file: {name_or_path} ({len(data)} bytes)" + reset)
+				return name, data
+
+		except Exception as e:
+			logger.debug(brightyellow + f"BOF file read failed for {name_or_path}: {e}" + reset)
+
+		# 2) BOF registry
+		try:
+			# Lazy-load registry once (only if we think it might be relevant)
+			if not self.bofs_enabled:
+				try:
+					load_bof_registry()
+				finally:
+					self.bofs_enabled = True
+
+			cls = BOF_REGISTRY.get(name_or_path)
+			if not cls:
+				# Try by basename (common convenience)
+				basename = os.path.splitext(os.path.basename(name_or_path))[0]
+				cls = BOF_REGISTRY.get(basename)
+				if not cls:
+					logger.debug(brightyellow + f"BOF not found in registry: {name_or_path}" + reset)
+					return None
+
+			# Prefer the requested key as the logical name; fall back to class name
+			logical_name = name_or_path if name_or_path in BOF_REGISTRY else basename
+
+			# Primary path: class variable `bofbase64`
+			b64val = getattr(cls, "bofbase64", None)
+			if isinstance(b64val, str) and b64val.strip():
+				try:
+					data = base64.b64decode(b64val, validate=False)
+					logger.debug(brightgreen + f"Resolved BOF '{logical_name}' from registry via bofbase64 ({len(data)} bytes)" + reset)
+					return logical_name, data
+				except Exception as e:
+					logger.debug(brightyellow + f"Failed to decode bofbase64 for '{logical_name}': {e}" + reset)
+
+			# Fallback: provider instance with load_bytes()
+			try:
+				provider = cls(self) if callable(getattr(cls, "__call__", None)) else None
+				if provider and hasattr(provider, "load_bytes"):
+					data = provider.load_bytes()
+					if isinstance(data, (bytes, bytearray)):
+						logger.debug(brightgreen + f"Resolved BOF '{logical_name}' from provider.load_bytes() ({len(data)} bytes)" + reset)
+						return logical_name, bytes(data)
+
+			except Exception as e:
+				logger.debug(brightyellow + f"Provider load_bytes() failed for '{logical_name}': {e}" + reset)
+
+		except Exception as e:
+			logger.debug(brightred + f"BOF registry resolution error: {e}" + reset)
+
+		return None
 
 	def interact(self, cmd, to_console=True, op_id=None):
 		set_output_context(to_console=to_console, to_op=op_id, world_wide=False)
@@ -212,7 +314,7 @@ class Gunnershell:
 
 				# help
 				if len(parts) == 1:
-					out = print_gunnershell_help(to_console=to_console, op_id=op_id)
+					out = print_gunnershell_help(to_console=to_console, op_id=op_id, gunnerplant=self.gunnerplant)
 					if out:
 						return out
 

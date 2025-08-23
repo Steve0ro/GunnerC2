@@ -267,7 +267,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 				parser.add_argument("-i", required=True, help="Session ID or alias (supports wildcards)")
 				parser.add_argument("-f", required=True, help="Remote file or folder path")
 				parser.add_argument("-o", required=True, help="Local output file or directory")
-				parser.add_argument("-t", "--timeout", dest="timeout", required=False, default=None, help="Timeout per chunk for your transfer")
+				parser.add_argument("-t", "--timeout", dest="timeout", type=float, required=False, default=None, help="Timeout per chunk for your transfer")
 				parser.add_argument("--chunk", type=int, default=262144, required=False, help="Chunk size (bytes)")
 					
 				try:

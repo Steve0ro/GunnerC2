@@ -256,7 +256,8 @@ def echo(msg: str, to_console, to_op, world_wide, color=False, _raw_printer=prin
 
 def list_sessions():
 	if not session_manager.sessions:
-		print(brightyellow + "No active sessions.")
+		print(brightyellow + "[*] No sessions connected.")
+		return  # <- stop here so the header/bar isn’t printed
 
 	print(brightgreen + (f"{'SID':<20} {'Alias':<15} {'Transport':<10} {'Hostname':<20} {'User':<25} {'OS':<10} {'Arch':<10}"))
 	print(brightgreen +("-" * 110))
@@ -563,6 +564,7 @@ def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerpla
 
 		if gunnerplant:
 			core_cmds["bofexec"] = "Execute a BOF from library or path"
+			core_cmds["bofhelp"] = "Display the entire BOF library"
 
 		# print Core
 		print(brightyellow + "\nCore Commands\n=============\n")

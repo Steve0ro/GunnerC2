@@ -1,7 +1,7 @@
 from __future__ import annotations
 import base64
 import argparse
-from typing import List
+from typing import List, Optional, Type, Any
 
 # Command Execution Imports
 from core.command_execution import http_command_execution as http_exec
@@ -33,7 +33,7 @@ class BofExecCommand(Command):
 	@property
 	def help(self):
 		return ("bofexec <bof_name_or_path> [-z STR ...] [-Z WSTR ...]   "
-		        "resolve a BOF and execute it on agent.")
+				"resolve a BOF and execute it on agent.")
 
 	def _parse_args(self, args: List[str]):
 		p = QuietParser(prog="bofexec", add_help=False)
@@ -87,7 +87,7 @@ class BofExecCommand(Command):
 			hint = ""
 			if not self.gs.bofs_enabled:
 				hint = (f"\n{brightyellow}Note:{brightgreen} BOF registry not loaded "
-				        f"(gunnerplant={self.gs.gunnerplant}).")
+						f"(gunnerplant={self.gs.gunnerplant}).")
 			return brightred + f"[!] BOF not found: {bof_ref}" + hint
 
 		b64 = res
@@ -98,7 +98,7 @@ class BofExecCommand(Command):
 		#b64 = base64.b64encode(data).decode("ascii")
 
 		# Minimal quoting for display
-		def q(s: str) -> str:
+		def q(s) -> str:
 			if ('"') in s:
 				return s.replace('"', '')
 
@@ -107,25 +107,27 @@ class BofExecCommand(Command):
 			#return '"' + s.replace('"', '\\"') + '"'
 
 		parts = [f"bofexec {b64}"]
-		if zargs:
-			for s in (zargs or []):
-				parts.append(f"-z:{q(s)}")
+		for s in (zargs or []):
+			parts.append(f"-z:{q(s)}")
 
-		elif Zargs:
-			for s in (Zargs or []):
-				parts.append(f"-Z:{q(s)}")
+		for s in (Zargs or []):
+			parts.append(f"-Z:{q(s)}")
 
-		elif int16:
-			for s in (int16 or []):
-				parts.append(f"-s:{q(s)}")
-
-		elif int32:
-			for s in (int32 or []):
-				parts.append(f"-i:{q(s)}")
+		for s in (int16 or []):
+			parts.append(f"-s:{q(s)}")
+			
+		for s in (int32 or []):
+			parts.append(f"-i:{q(s)}")
 
 		if args:
 			for s in args:
-				parts.append(s)
+				if bof_ref in ("schtasksquery"):
+					parts.insert(1, s)
+
+				else:
+					parts.append(s)
+
+		#print(parts)
 
 		preview = " ".join(parts)
 

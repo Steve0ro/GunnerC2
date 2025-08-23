@@ -27,6 +27,33 @@ Examples:
   bofexec ./bofs/whoami.o -z arg1 -z arg2 -Z "wide string"
 """,
 
+	"bofhelp": """
+bofhelp [<bof_name>|<term>]
+List built-in BOFs by section and show one-line descriptions.
+
+Usage:
+  bofhelp
+      Show the “Situational Awareness” BOF section.
+
+  bofhelp <bof_name>
+      Show detailed help for that specific BOF (if registered in the library).
+
+  bofhelp <term>
+      Filter the Situational Awareness list by keyword (name/description).
+      (If <term> exactly matches a BOF name, the detailed help is shown.)
+
+Notes:
+  • Requires gunnerplant payload with BOF support loaded.
+  • BOF names are library keys (e.g., whoami, dir, ipconfig).
+  • To execute a BOF:  bofexec <bof_name> [-z, -i, -Z, -s] [args]
+    For BOF usage:     bofexec <bof_name> -h
+
+Examples:
+  bofhelp
+  bofhelp whoami
+  bofhelp dir
+""",
+
 	"portfwd": {
 		"_desc": """portfwd <subcommand>
 		

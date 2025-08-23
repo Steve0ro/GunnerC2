@@ -70,6 +70,13 @@ def _gather_sa(term: str | None) -> List[Tuple[str, str]]:
 		items.append((name, desc))
 	return items
 
+def print_section(title, items):
+	underline = "=" * len(title)
+	print(brightyellow + f"{title}\n{underline}\n" + reset)
+	for name, desc in items.items():
+		print(brightgreen + f"{name:<25} {desc}" + reset)
+	print()
+
 @register("bofhelp")
 class BOFHelp(Command):
 	"""
@@ -107,39 +114,112 @@ class BOFHelp(Command):
 		if not ns.term:
 			# ---- Situational Awareness section ----
 			sa_bofs = {
-				"arp":              "Display ARP table",
-				"dir":              "Display directory contents",
-				"env":              "Display environment variables",
-				"driversigs":       "Enumerate common EDR drivers",
-				"getpwpolicy":      "Get server or domain password policy",
-				"getsessinfo":      "Get local session info",
-				"ipconfig":         "Get network information",
-				"listfwrules":      "List all firewall rules",
-				"listdns":          "List all cached DNS records",
-				"listmods":         "List a process's imported DLL's",
-				"locale":           "Get system locale information",
-				"netlocalgroup":    "List local groups/local group members",
-				"netloggedon":      "List all active user sessions",
-				"netstat":          "Show sockets and listening ports",
-				"nettime":          "Display local time on agent",
-				"netuptime":        "Show uptime of machine",
-				"netuser":          "Enumerate users in the AD domain",
-				"netuserenum":      "Enumerate users in AD domain or local server",
-				"routeprint":       "Print the entire route table",
-				"whoami":           "Run internal command whoami /all",
-				"tasklist":         "Lists currently running processes",
-				"resources":        "Display computer memory information",
-				"cacls":            "Display file permissions (Wildcards supported!)",
-				"notepad":          "Steals text from any active notepad window",
-				"netview":          "Lists local workstations and servers"
+				"dir":              			   "Display directory contents",
+				"env":              			   "Display environment variables",
+				"getpwpolicy":      			   "Get server or domain password policy",
+				"useridletime":                    "Shows the user's idle time",
+				"getsessinfo":      			   "Get local session info",
+				"listmods":         			   "List a process's imported DLL's",
+				"netlocalgroup":    			   "List local groups/local group members",
+				"netloggedon":      			   "List all active user sessions",
+				"nettime":          			   "Display local time on agent",
+				"netuptime":        			   "Show uptime of machine",
+				"netuser":          			   "Enumerate users in the AD domain",
+				"netuserenum":      			   "Enumerate users in AD domain or local server",
+				"whoami":           		       "Run internal command whoami /all",
+				"tasklist":         		       "Lists currently running processes",
+				"cacls":            		       "Display file permissions (Wildcards supported!)",
+				"enumdrives":                      "Enumerate drive letters and their type",
+				"enumdotnet":                      "Find processes that most likely have .NET loaded",
+				"sc_enum":          	           "Enumerate all service configs in depth",
+				"schtasksenum":     			   "Enumerates all scheduled tasks on the local or target machine",
+				"schtasksquery":                   "Lists the details of the requested task",
+				"enumlocalsessions":               "Enumerate the currently attached user sessions both local and over rdp",
+			}
+
+			system_information_bofs = {
+				"winver":                          "Display Windows version info",
+				"locale":           			   "Get system locale information",
+				"dotnetversion":                   "Enumerates installed .NET versions",
+				"listinstalled":                   "Enumerates installed software (x86/x64)",
+				"getkernaldrivers":                "Lists loaded kernel drivers",
+				"hotfixenum":                      "Lists installed hotfixes & patch level",
+				"resources":        		       "Display computer memory information",
+				"getgpu":                          "Enumerates Basic GPU & driver info",
+				"getcpu":                          "Enumerates basic CPU & driver info",
+				"getbios":                         "Reports BIOS and firmware info",
+
+			}
+
+			token_identity_bofs = {
+				"getintegrity":                    "Queries the current process token and reports its Windows integrity level",
+				"getuac":                          "Determines UAC is enabled and reports it's level",
+				"tokenprivs":                      "Checks Available Token Privileges",
+			}
+
+			networking_bofs = {
+				"arp":              			   "Display ARP table",
+				"ipconfig":         			   "Get network information",
+				"probe":                           "Check if a port is open",
+				"listfwrules":      			   "List all firewall rules",
+				"listdns":          			   "List all cached DNS records",
+				"netstat":          			   "Show sockets and listening ports",
+				"routeprint":       		       "Print the entire route table",
+				"netview":          	           "Lists local workstations and servers",
+				"netshares":        	           "Lists shares on local or remote computer",
+			}
+
+			privilege_escalation_bofs = {
+				"noquotesvc":                      "Check for unquoted service paths",
+				"checkautoruns":                   "Checks For Modifiable Autoruns",
+				"hijackpath":                      "Checks For Hijackable Paths",
+				"enumcreds":                       "Enumerates Credentials From Credential Manager",
+				"enumautologons":                  "Checks for Autologon Registry Keys",
+				"checkelevated":                   "Checks for Always Install Elevated Registry Keys",
+			}
+
+			credential_dumping_bofs = {
+				"hashdump":                        "Dumps registry SAM / SECURITY / SYSTEM  to a path of your choosing",
+				"wifidump":                        "Enumerates WiFi interfaces and dumps clear text credentials",
+				"dumpclip":                        "Prints any text on the clipboard",
+				"dumpntlm":                        "Capture the NetNTLMv2 hash of the current user",
+				"notepad":          		       "Steals text from any active notepad window",
+			}
+
+			activedirectory_bofs = {
+				"klist":                           "Displays a list of currently cached Kerberos tickets.",
+				"adcs_enum":                       "Enumerates CAs and templates in the AD using Win32 functions",
+				"adcs_enum_com":                   "Enumerates CAs and templates in the AD using ICertConfig COM object",
+				"adcs_enum_com2":                  "Enumerates CAs and templates in the AD using IX509PolicyServerListManager COM object",
+			}
+
+			persistence_bofs = {
+				"adduser":                         "Add a new user to a machine",
+			}
+
+			evasion_bofs = {
+				"getexclusions":                   "Check the AV for excluded files, folders, extentions and processes",
+				"getsecurity":                     "List security products running on the current or remote host",
+				"driversigs":       			   "Enumerate common EDR drivers",
+				"getsysmon":                       "Verify if Sysmon is running",
+				"killsysmon":                      "Silence Sysmon by patching its capability to write ETW events to the log"
 			}
 
 			print()
-			print(brightyellow + "Situational Awareness\n=====================\n")
-			for name, desc in sa_bofs.items():
-				print(brightgreen + f"{name:<25} {desc}")
-			print()
-			print(brightyellow + "\nFor detailed help run: bofhelp <bof>\n")
+			for title, items in [
+				("Situational Awareness", sa_bofs),
+				("System Information", system_information_bofs),
+				("Networking", networking_bofs),
+				("Privilege Escalation", privilege_escalation_bofs),
+				("Credential Dumping", credential_dumping_bofs),
+				("Active Directory", activedirectory_bofs),
+				("Token & Identity", token_identity_bofs),
+				("Persistence", persistence_bofs),
+				("Evasion", evasion_bofs),
+			]:
+				print_section(title, items)
+
+			print(brightyellow + "\nFor detailed help run: bofhelp <bof>\n" + reset)
 
 		else:
 			bofclass = BOFS.get(ns.term)

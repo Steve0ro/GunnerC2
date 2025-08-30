@@ -565,6 +565,7 @@ def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerpla
 		if gunnerplant:
 			core_cmds["bofexec"] = "Execute a BOF from library or path"
 			core_cmds["bofhelp"] = "Display the entire BOF library"
+			core_cmds["bofcount"] = "Display the number of loaded BOFs"
 
 		# print Core
 		print(brightyellow + "\nCore Commands\n=============\n")

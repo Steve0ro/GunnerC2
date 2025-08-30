@@ -134,6 +134,7 @@ class BOFHelp(Command):
 				"sc_enum":          	           "Enumerate all service configs in depth",
 				"schtasksenum":     			   "Enumerates all scheduled tasks on the local or target machine",
 				"schtasksquery":                   "Lists the details of the requested task",
+				"getrecentfiles":                  "Lists recent files for current user",
 				"enumlocalsessions":               "Enumerate the currently attached user sessions both local and over rdp",
 			}
 
@@ -164,6 +165,7 @@ class BOFHelp(Command):
 				"listfwrules":      			   "List all firewall rules",
 				"listdns":          			   "List all cached DNS records",
 				"netstat":          			   "Show sockets and listening ports",
+				"openports":                       "Lists open ports without spawning child processess",
 				"routeprint":       		       "Print the entire route table",
 				"netview":          	           "Lists local workstations and servers",
 				"netshares":        	           "Lists shares on local or remote computer",
@@ -179,22 +181,50 @@ class BOFHelp(Command):
 			}
 
 			credential_dumping_bofs = {
-				"hashdump":                        "Dumps registry SAM / SECURITY / SYSTEM  to a path of your choosing",
+				"hivesave":                        "Dumps registry SAM / SECURITY / SYSTEM to a path of your choosing",
+				"hashdump":                        "Dumps local SAM hashes completely in memory",
+				"nanodump":                        "Dumps LSASS with syscalls",
+				"credman":                         "Dumps credentials from Windows Credential Manager",
 				"wifidump":                        "Enumerates WiFi interfaces and dumps clear text credentials",
 				"dumpclip":                        "Prints any text on the clipboard",
 				"dumpntlm":                        "Capture the NetNTLMv2 hash of the current user",
 				"notepad":          		       "Steals text from any active notepad window",
+				"autologon":                       "Checks AutoLogon for credentials",
 			}
 
 			activedirectory_bofs = {
-				"klist":                           "Displays a list of currently cached Kerberos tickets.",
+				"ldapsearch":                      "Executes LDAP query",
+				"domaininfo":                      "Domain/forest functional levels + FSMO owners",
+				"adadmins":                        "Finds Privileged Users & Privileged Groups",
+				"adusers":                         "Enumerates Active Directory users",
+				"adgroups":                        "Enumerates Active Directory groups",
+				"adcomputers":                     "Enumerates Active Directory computers",
+				"adtrusts":                        "Enumerates Active Directory Trusts",
+				"adous":                           "Map OU structure and show linked GPOs",
+				"adgpos":                          "Enumerates Group Policy Objects (GPOs)",
+				"adspns":                          "Enumerates Service Principal Names (SPNs)",
+				"addns":                           "The Ultimate AD DNS Enumeration BOF",
+				"addelegations":                   "Enumerates unconstrained / constrained delegation and RBCD",
+				"adpasswords":                     "Identify Accounts with Interesting/Vulnerable Password Policies",
+				"adstaleusers":                    "Enumerates Stale/Inactive Active Directory Users",
 				"adcs_enum":                       "Enumerates CAs and templates in the AD using Win32 functions",
 				"adcs_enum_com":                   "Enumerates CAs and templates in the AD using ICertConfig COM object",
 				"adcs_enum_com2":                  "Enumerates CAs and templates in the AD using IX509PolicyServerListManager COM object",
 			}
 
+			activedirectory_aclenum_bofs = {
+				"dcsyncenum":                      "Finds Dangerous DC sync privileges",
+			}
+
+			kerberos_bofs = {
+				"klist":                           "Displays a list of currently cached Kerberos tickets.",
+				"asktgt":                          "Request a Kerberos TGT and optionally inject it into memory",
+				"asreproast":                      "Preform Asreproasting in Active Directory",
+			}
+
 			persistence_bofs = {
 				"adduser":                         "Add a new user to a machine",
+				"enablerdp":                       "Enable Remote Desktop on target",
 			}
 
 			evasion_bofs = {
@@ -202,7 +232,9 @@ class BOFHelp(Command):
 				"getsecurity":                     "List security products running on the current or remote host",
 				"driversigs":       			   "Enumerate common EDR drivers",
 				"getsysmon":                       "Verify if Sysmon is running",
-				"killsysmon":                      "Silence Sysmon by patching its capability to write ETW events to the log"
+				"dumpsysmonconfig":                "Dumps Sysmon’s live configuration directly from the registry",
+				"killsysmon":                      "Silence Sysmon by patching its capability to write ETW events to the log",
+				"checkdebuggers":                  "Checks for active debuggers running",
 			}
 
 			print()
@@ -213,6 +245,8 @@ class BOFHelp(Command):
 				("Privilege Escalation", privilege_escalation_bofs),
 				("Credential Dumping", credential_dumping_bofs),
 				("Active Directory", activedirectory_bofs),
+				("AD ACL Enumeration", activedirectory_aclenum_bofs),
+				("Kerberos Exploitation", kerberos_bofs),
 				("Token & Identity", token_identity_bofs),
 				("Persistence", persistence_bofs),
 				("Evasion", evasion_bofs),

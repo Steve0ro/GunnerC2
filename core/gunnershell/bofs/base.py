@@ -5,6 +5,7 @@ import os
 import base64
 import pkgutil
 import importlib
+import argparse
 from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Dict, Type, Optional, Any, List
@@ -22,6 +23,24 @@ class Bof(ABC):
 	@abstractmethod
 	def help_menu(self):
 		"""Print Help menu for BOF"""
+
+	@staticmethod
+	def args_inject(p: argparse.ArgumentParser) -> None:
+		"""
+		Optional: BOF-specific argparse injection.
+		Add any custom arguments here, e.g.:
+		    p.add_argument('--foo', help='...') 
+		"""
+		return
+
+	@staticmethod
+	def build_remote_args(ns: Any) -> List[str]:
+		"""
+		Optional: Convert parsed args into a list of strings to append
+		to the remote 'bofexec <b64> ...' command. Return [] if none.
+		Example return: ['--foo', ns.foo] or ['-i:3389'].
+		"""
+		return []
 
 	'''@abstractmethod
 	def load_bytes(self) -> bytes:

@@ -213,7 +213,10 @@ class BOFHelp(Command):
 			}
 
 			activedirectory_aclenum_bofs = {
+				"enumacls":                        "Active Directory Attack Path Hunter",
 				"dcsyncenum":                      "Finds Dangerous DC sync privileges",
+				"enumrbcd":                        "Finds Resource-Based Constrained Delegation",
+				"enumgmsa":                        "Finds principals allowed to retrieve gMSA passwords",
 			}
 
 			kerberos_bofs = {

@@ -715,6 +715,7 @@ namespace RunOF.Internals
 	{
 		private IMAGE_FILE_HEADER file_header;
 		private List<IMAGE_SECTION_HEADER> section_headers;
+		const uint IMAGE_SCN_CNT_UNINITIALIZED_DATA = 0x00000080;
 		private List<IMAGE_SYMBOL> symbols;
 		private long string_table;
 		internal IntPtr base_addr;
@@ -870,8 +871,55 @@ namespace RunOF.Internals
 						// we allocate section_pages * pagesize bytes
 						var addr = NativeDeclarations.VirtualAlloc(IntPtr.Add(this.base_addr, num_pages * Environment.SystemPageSize), (uint)(section_pages * Environment.SystemPageSize), NativeDeclarations.MEM_COMMIT, NativeDeclarations.PAGE_EXECUTE_READWRITE);
 						num_pages+=section_pages;
+						//Log($"Copying section to 0x{addr.ToInt64():X}");
+
 						Log($"Copying section to 0x{addr.ToInt64():X}");
-						// but we only copy sizeofrawdata (which will almost always be less than the amount we allocated)
+
+						// --- SAFE COPY GUARDING ---
+						int srcOffset = unchecked((int)section_header.PointerToRawData);
+						int copyLen   = unchecked((int)section_header.SizeOfRawData);
+
+						// Treat .bss (uninitialized data): no raw bytes to read from the file
+						bool isBss = (section_header.Characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA) != 0;
+
+						if (isBss || copyLen == 0 || srcOffset == 0 && isBss)
+						{
+    						Log("Skipping copy: BSS/uninitialized data (memory is already zeroed).");
+						}
+						else
+						{
+    						// Bounds check against the file buffer
+    						if (srcOffset < 0 || srcOffset > file_contents.Length)
+    						{
+        						Log($"Skipping copy: srcOffset {srcOffset} is outside file (len {file_contents.Length}).");
+    						}
+    						else
+    						{
+        						int bytesAvailable = file_contents.Length - srcOffset;
+        						if (copyLen > bytesAvailable)
+        						{
+            						Log($"Truncating copy from {copyLen} to {bytesAvailable} (end of file).");
+            						copyLen = bytesAvailable;
+        						}
+
+        						if (copyLen > 0)
+        						{
+            						Marshal.Copy(file_contents, srcOffset, addr, copyLen);
+        						}
+        						else
+        						{
+            						Log("Nothing to copy after bounds check.");
+        						}
+    						}
+						}
+						// --- END SAFE COPY GUARDING ---
+
+						Log($"Updating section ptrToRawData to {(addr.ToInt64() - this.base_addr.ToInt64()):X}");
+						var new_hdr = section_headers[i];
+						new_hdr.PointerToRawData = (uint)(addr.ToInt64() - this.base_addr.ToInt64());
+						section_headers[i] = new_hdr;
+
+						/*// but we only copy sizeofrawdata (which will almost always be less than the amount we allocated)
 						Marshal.Copy(file_contents, (int)section_header.PointerToRawData, addr, (int)section_header.SizeOfRawData);
 						Log($"Updating section ptrToRawData to {(addr.ToInt64() - this.base_addr.ToInt64()):X}");
 						// We can't directly modify the section header in the list as it's a struct. 
@@ -879,7 +927,7 @@ namespace RunOF.Internals
 						// for now, replace it with a new struct with the new offset
 						var new_hdr = section_headers[i];
 						new_hdr.PointerToRawData = (uint)(addr.ToInt64() - this.base_addr.ToInt64());
-						section_headers[i] = new_hdr;
+						section_headers[i] = new_hdr;*/
 
 						// because we change the section header entry to have our new address, it's hard to work out later what permissions apply to what memory pages
 						// so we record that in this list for future use (post-relocations and patching)
@@ -2330,6 +2378,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.Remoting.Messaging;
 using System.Text;
@@ -2419,7 +2468,7 @@ namespace RunOF.Internals
 				}
 
 				// -i (uint32)
-				if (arg.StartsWith("-i", StringComparison.Ordinal))
+				/*if (arg.StartsWith("-i", StringComparison.Ordinal))
 				{
 					string val = ValueAfter(arg, parts, ref i);
 					if (val != null)
@@ -2428,6 +2477,81 @@ namespace RunOF.Internals
 						catch (Exception e) { Log("Unable to parse OF argument -i as a uint32: " + e); }
 					}
 					continue;
+				}*/
+
+				/*if (arg.StartsWith("-i", StringComparison.Ordinal))
+				{
+    				Log("[-i] token at index " + i + " arg='" + arg + "'");
+    				string val = ValueAfter(arg, parts, ref i);
+    				if (val != null)
+    				{
+        				Log("[-i] value='" + val + "' (post-ValueAfter index=" + i + ")");
+        				try
+        				{
+            				of_args.Add(new OfArg(UInt32.Parse(val)));
+            				Log("[-i] parsed OK: " + val);
+        				}
+        				catch (Exception e)
+        				{
+            				Log("[-i] parse error for value '" + val + "' at index " + i + ": " + e);
+        				}
+    				}
+    				else
+    				{
+        				Log("[-i] missing value (post-ValueAfter index=" + i + ")");
+    				}
+    				continue;
+				}*/
+
+				if (arg.StartsWith("-i", StringComparison.Ordinal))
+				{
+    				Log("[-i] token at index " + i + " arg='" + arg + "'");
+
+    				string val = null;
+
+    				// Prefer inline form: -i:<value>
+    				int colon = arg.IndexOf(':');
+    				if (colon >= 0)
+    				{
+        				string inline = arg.Substring(colon + 1);
+        				int cut = inline.IndexOfAny(new[] { ' ', '\\t', '\\r', '\\n', ';' });
+        				if (cut >= 0) inline = inline.Substring(0, cut);
+        				inline = inline.Trim().Trim('\\'', '"');
+        				val = inline;
+        				Log("[-i] inline value='" + val + "'");
+    				}
+    				else
+    				{
+        				// Fallback to next token
+        				string v = ValueAfter(arg, parts, ref i);
+        				if (v != null)
+        				{
+            				int cut = v.IndexOfAny(new[] { ' ', '\\t', '\\r', '\\n', ';' });
+            				if (cut >= 0) v = v.Substring(0, cut);
+            				v = v.Trim().Trim('\\'', '"');
+            				val = v;
+            				Log("[-i] next-token value='" + val + "' (post-ValueAfter index=" + i + ")");
+        				}
+    				}
+
+    				if (!string.IsNullOrEmpty(val))
+    				{
+        				try
+        				{
+            				of_args.Add(new OfArg(UInt32.Parse(val)));
+            				Log("[-i] parsed OK: " + val);
+        				}
+        				catch (Exception e)
+        				{
+            				Log("[-i] parse error for value '" + val + "' at index " + i + ": " + e);
+        				}
+   					}
+    				else
+    				{
+        				Log("[-i] missing/empty value (index=" + i + ")");
+    				}
+
+    				continue;
 				}
 
 				// -s (uint16)

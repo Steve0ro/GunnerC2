@@ -33,121 +33,154 @@ class AdDnsBof(Bof):
 
 	def help_menu():
 		menu = """
-adstaleusers — Audit and list AD users whose last logon is older than N days (or before a date)
+addns — AD-Integrated DNS (LDAP View)
 
 Purpose
-  Fast, LDAP-only stale-account sweep. Uses replicated lastLogonTimestamp by default
-  (good domain-wide signal), or non-replicated lastLogon for DC-accurate point-in-time checks.
+  Enumerate AD-stored DNS zones and records via LDAP (read-only; no dynamic updates).
 
-What it reads/evaluates
-  • sAMAccountName, displayName, distinguishedName
-  • lastLogonTimestamp (replicated) or lastLogon (DC-local)
-  • pwdLastSet (password age)
-  • userAccountControl (disabled bit), lockoutTime (locked)
-  • servicePrincipalName (SPN presence → service accounts)
-  • memberOf (direct memberships)
+What it pulls/decodes
+  • dnsZone / dnsNode objects from AD app partitions
+  • dnsRecord blobs decoded to human-readable RR data (A/AAAA/CNAME/SRV/TXT/MX/PTR/NS/SOA)
+  • Aging / scavenging timestamps for staleness checks
+  • Tombstoned nodes (dNSTombstoned=TRUE), if requested
 
 Usage (synopsis)
-  bofexec adstaleusers [--days N | --since YYYY-MM-DD]
-                       [--attr-source lastLogonTimestamp|lastLogon]
-                       [--ou DN] [--member-of DN,DN]
-                       [--include-disabled | --disabled-only]
-                       [--include-locked   | --locked-only]
-                       [--include-null     | --null-only]
-                       [--spn-only | --exclude-spn]
-                       [--names] [--attributes attr,attr]
-                       [--resolve-dates | --raw-timestamps]
-                       [--sort name|lastlogon|pwdlastset [asc|desc]]
-                       [--limit N] [--stats]
-                       [--filter LDAP_FILTER]
-                       [-d DOMAIN] [--dc HOST] [--dc-ip IP] [--ldaps] [--port N]
+  bofexec addns [--zone ZONE]
+		[--record-type A|AAAA|CNAME|SRV|TXT|MX|PTR|NS|SOA|ALL]
+		[--partition domain|forest|legacy|all]
+		[--include-reverse | --reverse-only]
+		[--names]
+		[--stale-days N] [--stale-only]
+		[--include-tombstoned | --tombstoned-only]
+		[--filter LDAP_FILTER]
+		[--attributes attr,attr]
+		[--raw-records]
+		[--stats]
+		[-d DOMAIN] [--dc HOST] [--dc-ip IP] [--ldaps] [--port N]
 
 Connection
-  -d, --domain <dns>     DNS name for the target AD domain (e.g., contoso.com).
-  --dc <hostname>        Domain Controller hostname/FQDN to connect to.
-  --dc-ip <ip>           Domain Controller IP address (alternative to --dc).
-  --ldaps                Use LDAPS (default 636). Otherwise LDAP (389).
-  --port <int>           Override LDAP/LDAPS port.
+  -d, --domain <dns>       DNS name for the target AD domain (e.g., contoso.com).
+  --dc <hostname>          Domain Controller hostname/FQDN to connect to.
+  --dc-ip <ip>             Domain Controller IP to connect to (alternative to --dc).
+  --ldaps                  Use LDAPS (default port 636). Otherwise LDAP (port 389).
+  --port <int>             Override the LDAP/LDAPS port.
 
 Query shaping
-  --days N               Stale threshold in days (default: 90).
-  --since YYYY-MM-DD     Absolute cutoff date; overrides --days.
-  --attr-source <which>  Which attribute to evaluate as “last logon”:
-                         - lastLogonTimestamp (default, replicated)
-                         - lastLogon         (non-replicated, DC-local)
-  --ou <DN>              Limit search base to this OU DN (subtree).
-  --member-of <DN,DN>    CSV of group DNs; user must be a direct member of ANY.
-  --filter <LDAP>        Extra LDAP filter (ANDed with the base user filter).
+  --zone <ZONE_NAME>       Filter to a specific zone (e.g., contoso.com, _msdcs.contoso.com).
+  --record-type <TYPE>     Limit to record type: A|AAAA|CNAME|SRV|TXT|MX|PTR|NS|SOA|ALL (default: ALL).
+  --filter <LDAP_FILTER>   Custom LDAP filter (escape per RFC4515). Overrides the default dnsNode filter.
+  --partition <which>      Where to search:
+                           - domain  = DC=DomainDnsZones,<domainDN>
+                           - forest  = DC=ForestDnsZones,<forestRootDN>
+                           - legacy  = CN=System,<domainDN>
+                           - all     = search all three (default)
+  --include-reverse        Include reverse zones (in-addr.arpa / ip6.arpa) in the search.
+  --reverse-only           Only enumerate reverse zones (implies --include-reverse).
+  --names                  Output just FQDN node names (no attributes).
 
-Account state filters
-  --include-disabled     Include disabled users (default excludes).
-  --disabled-only        Show only disabled users.
-  --include-locked       Include locked-out users (default includes both).
-  --locked-only          Show only locked-out users.
-  --include-null         Include users with no lastLogon* value.
-  --null-only            Show ONLY users with no lastLogon* value.
-  --spn-only             Only users with SPNs (likely service accounts).
-  --exclude-spn          Exclude users that have SPNs.
+Staleness / lifecycle
+  --stale-days N           Flag records whose aging timestamps are older than N days.
+  --stale-only             Show only those records flagged by --stale-days.
+  --include-tombstoned     Include dNSTombstoned=TRUE nodes in results (default excludes).
+  --tombstoned-only        Only show dNSTombstoned=TRUE nodes.
 
 Output control
-  --names                Print only sAMAccountName (one per line).
-  --attributes <csv|*>   Extra attributes to print (in addition to basics). “*” = server-side all.
-  --resolve-dates        Human-readable timestamps (default).
-  --raw-timestamps       Also show raw 64-bit FILETIME values.
-  --sort <field> [dir]   Sort by name | lastlogon | pwdlastset (default: lastlogon desc).
-                         If field=name and dir omitted → asc; otherwise default dir=desc.
-  --limit N              Stop after N matches.
-  --stats                Print summary counts (scanned / stale / disabled / locked / printed).
+  --attributes <csv>       Comma-separated attribute list or "*" (default: all when not using --names).
+  --raw-records            Print raw hex for dnsRecord alongside decoded fields.
+  --stats                  Summarize counts per zone/type and grand totals.
 
 Defaults
-  • Threshold: --days 90 (unless --since given)
-  • Source: lastLogonTimestamp
-  • Disabled users: excluded (use --include-disabled / --disabled-only to change)
-  • Null last logon: treated as stale (override with --include-null/--null-only)
-  • Dates: resolved (use --raw-timestamps for FILETIME)
-  • Sort: lastlogon desc
-  • Scope: entire domain unless --ou is set
+  • Partition: all  (DomainDnsZones + ForestDnsZones + legacy CN=System)
+  • Reverse zones: excluded unless --include-reverse (or --reverse-only)
+  • Tombstoned nodes: excluded unless --include-tombstoned/--tombstoned-only
+  • Output: all attributes unless --names or --attributes are given
+
+Partition quick reference
+  • domain  →  DC=DomainDnsZones,<domainDN>
+  • forest  →  DC=ForestDnsZones,<forestRootDN>
+  • legacy  →  CN=System,<domainDN>
+  • all     →  search all three (default)
+
+Record types
+  A, AAAA, CNAME, SRV, TXT, MX, PTR, NS, SOA, ALL
 
 Notes & tips
-  • lastLogonTimestamp replicates with lag; great for domain-wide stale hunting.
-  • lastLogon is not replicated—query a specific DC (often the PDC) with --dc and --attr-source lastLogon
-    for “this DC’s view” of activity.
-  • --member-of matches direct membership only (no nested expansion).
-  • You can combine --member-of with --spn-only to focus on stale service accounts in privileged groups.
-  • If your DN contains spaces, just quote it; the wrapper handles escaping.
+  • --reverse-only implies --include-reverse.
+  • --names prints only FQDN node names (root “@” nodes render as the zone FQDN).
+  • --stale-days uses aging timestamps from dnsRecord; requires that the record has aging set.
+  • Use --raw-records to show hex alongside decoded RR data (handy for odd TXT/MX/SRV payloads).
+  • You can combine --record-type with --filter for fine-grained targeting (e.g., name=...).
 
 Practical examples
 
-  Discovery / quick lists
-   1) 90+ day stale users, names only:
-      {brightyellow}bofexec adstaleusers --names{reset}
+  Discovery / scoping
+	1) List all zones in the forest (names only)
+	   bofexec addns --filter "(objectClass=dnsZone)" --names
 
-   2) Stale since a fixed date, only disabled under a specific OU:
-      {brightyellow}bofexec adstaleusers --since 2024-06-01 --disabled-only --ou "OU=Contractors,DC=contoso,DC=com"{reset}
+	2) Enumerate all records in a single zone
+	   bofexec addns --zone corp.local
 
-   3) DC-accurate audit on the PDC using lastLogon, raw timestamps, limit 50:
-      {brightyellow}bofexec adstaleusers --dc PDC01 --attr-source lastLogon --raw-timestamps --limit 50{reset}
+	3) Enumerate across only the domain partition
+	   bofexec addns --partition domain
 
-  Service accounts / group targeting
-   4) Stale service accounts (have SPNs), include locked ones, older than 120 days:
-      {brightyellow}bofexec adstaleusers --spn-only --include-locked --days 120 -d contoso.com{reset}
+	4) Target a specific DC over LDAPS
+	   bofexec addns -d corp.local --dc dc01.corp.local --ldaps
 
-   5) Stale users directly in Helpdesk or Domain Admins, sort by name asc:
-      {brightyellow}bofexec adstaleusers --member-of "CN=Helpdesk,OU=Groups,DC=contoso,DC=com,CN=Domain Admins,CN=Users,DC=contoso,DC=com" --sort name asc{reset}
+  Record-type hunts
+	5) Forward A records for a zone
+	   bofexec addns --zone corp.local --record-type A
 
-  Triaging output
-   6) Print extra attributes for investigation:
-      {brightyellow}bofexec adstaleusers --attributes mail,userPrincipalName,lastLogon{reset}
+	6) All AAAA records forest-wide
+	   bofexec addns --record-type AAAA --partition forest
 
-   7) Show only never-logged-in accounts:
-      {brightyellow}bofexec adstaleusers --null-only{reset}
+	7) Kerberos SRV records in _msdcs
+	   bofexec addns --zone _msdcs.corp.local --record-type SRV
 
-   8) Summarize (no cap) with stats:
-      {brightyellow}bofexec adstaleusers --stats{reset}
+	8) PTR records in reverse zones (entire forest)
+	   bofexec addns --reverse-only --record-type PTR
 
-  Connection pinning
-   9) Target a specific DC over LDAPS:
-      {brightyellow}bofexec adstaleusers -d corp.local --dc dc01.corp.local --ldaps{reset}
+	9) Nameservers of the root zone object
+	   bofexec addns --zone corp.local --record-type NS
+
+  Staleness / lifecycle
+   10) Flag stale A records older than 30 days in corp.local
+	   bofexec addns --zone corp.local --record-type A --stale-days 30
+
+   11) Show only stale records (older than 60 days), any type
+	   bofexec addns --stale-days 60 --stale-only
+
+   12) Include tombstoned nodes in output
+	   bofexec addns --include-tombstoned
+
+   13) Only tombstoned TXT/CNAME records in legacy partition
+	   bofexec addns --partition legacy --record-type TXT --tombstoned-only
+	   bofexec addns --partition legacy --record-type CNAME --tombstoned-only
+
+  Output control / triage
+   14) Just the FQDNs of nodes in a zone
+	   bofexec addns --zone corp.local --names
+
+   15) Focused attributes for SRV records (omit everything else)
+	   bofexec addns --zone _msdcs.corp.local --record-type SRV --attributes name,dnsRecord
+
+   16) Dump raw hex next to decoded TXT payloads
+	   bofexec addns --record-type TXT --raw-records
+
+   17) Forest-wide stats by zone and type (no full dumps)
+	   bofexec addns --stats
+
+  Advanced filtering (escape hatch)
+   18) Only nodes whose name starts with “web”
+	   bofexec addns --filter "(name=web*)"
+
+   19) All CNAMEs under corp.local excluding tombstoned
+	   bofexec addns --zone corp.local --record-type CNAME --filter "(!(dNSTombstoned=TRUE))"
+
+Connection overrides
+  -d/--domain  choose target DNS domain for BaseDN derivation & DC discovery
+  --dc / --dc-ip  pin a specific controller (hostname or IP)
+  --ldaps  use LDAPS (default port 636; override with --port)
+
 """
 		print(brightgreen + menu + reset)
 		return

@@ -331,8 +331,8 @@ def build(output_path: Path, raw: str):
 		dump = dump_templates(tempdir, raw)
 		if dump:
 			# 2) Run make stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-			subprocess.run(["make", "clean"], cwd=tempdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-			subprocess.run(["make", "CONFIG=Debug", "ARCH=x64", "build"], cwd=tempdir, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+			subprocess.run(["make", "clean"], cwd=tempdir, check=True)
+			subprocess.run(["make", "CONFIG=Debug", "ARCH=x64", "build"], cwd=tempdir, check=True)
 
 			# 3) Copy AV.exe out
 			shutil.copy(tempdir / "bin" / "x64" / "Debug" / "AV.exe", output_path)

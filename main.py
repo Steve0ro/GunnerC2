@@ -9,6 +9,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Backend starting helper
+from core.backend_starter import ensure_backend_running
+
 
 from core import print_override
 from core.print_override import set_output_context
@@ -1809,6 +1812,14 @@ if __name__ == "__main__":
 	if not listen:
 		print(brightred + f"Failed to load listener library, exiting...")
 		sys.exit(1)	
+
+	try:
+		BACKEND_URL = ensure_backend_running()
+
+	except Exception as e:
+		print(f"[!] Failed to start backend API: {e}")
+		logger.error("ensure_backend_running() FAILED, exiting...")
+		sys.exit(1)
 
 	logger.debug("=== starting teamserver ===")
 	teamsrv_startup = teamserver()

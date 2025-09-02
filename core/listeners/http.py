@@ -816,21 +816,21 @@ class HttpListener(Listener):
 			if certfile and keyfile:
 				if not (os.path.isfile(certfile) and os.path.isfile(keyfile)):
 					#prompt_manager.block_next_prompt = False
-					print(brightred + "[!] Cert or key file not found, aborting HTTPS listener.")
+					print(brightred + "\n[!] Cert or key file not found, aborting HTTPS listener.")
 					return
 
 				context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
 				context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-				print(brightgreen + f"[*] Loaded certificate {certfile} and key {keyfile}")
+				print(brightgreen + f"\n[*] Loaded certificate {certfile} and key {keyfile}")
 
 			else:
 				context = generate_tls_context(ip)
-				print(brightgreen + "[*] Using generated self-signed certificate")
+				print(brightgreen + "\n[*] Using generated self-signed certificate")
 
 			self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
 
 
-		print(brightgreen + f"[+] {self.transport.upper()} listener started on {self.ip}:{self.port}")
+		print(brightgreen + f"\n[+] {self.transport.upper()} listener started on {self.ip}:{self.port}")
 
 		# run in background
 		self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)

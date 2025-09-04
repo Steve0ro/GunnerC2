@@ -1,6 +1,7 @@
 # gui/session_console.py
-from PyQt5.QtWidgets import QWidget, QPlainTextEdit, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout
-from PyQt5.QtCore import QUrl
+from PyQt5.QtWidgets import QWidget, QPlainTextEdit, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout, QShortcut
+from PyQt5.QtCore import QUrl, Qt
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtNetwork import QAbstractSocket
 from PyQt5.QtWebSockets import QWebSocket
 

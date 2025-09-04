@@ -5,6 +5,7 @@ import socket
 import ssl
 import threading
 import time
+import select
 import logging
 
 from core.utils import defender
@@ -88,27 +89,41 @@ class TcpCommandRouter:
 
 
 	def _drain_socket(self):
-		"""Quickly drain stray bytes so they don't pollute our next read."""
+		"""
+		Quickly drain any already-queued bytes without blocking.
+		Normal 'no data' conditions (EWOULDBLOCK/SSLWantRead) are NOT errors.
+		We cap time/bytes so we never spin.
+		"""
 		logger.debug("[%s] Draining stray bytes before send", time.strftime("%H:%M:%S"))
-		self.sock.settimeout(0.0)
-		self.sock.setblocking(False)
+		drained = 0
+		deadline = time.time() + 0.05  # ~50ms budget
 		try:
-			while True:
-				with self.recv_lock:
-					data = self.sock.recv(1024*8)
-
-				if not data:
+			self.sock.setblocking(False)
+			while time.time() < deadline:
+				# poll once; if not readable, we’re done
+				r, _, _ = select.select([self.sock], [], [], 0)
+				if not r:
 					break
-		except (socket.timeout, BlockingIOError, OSError, ssl.SSLWantReadError, ssl.SSLWantWriteError, ConnectionResetError, BrokenPipeError):
-			logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
-			return
-
+				try:
+					with self.recv_lock:
+						chunk = self.sock.recv(8192)
+				except (BlockingIOError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
+					# nothing to read right now — not an error
+					break
+				except (ConnectionResetError, BrokenPipeError, OSError):
+					# real socket error: stop draining
+					break
+				if not chunk:
+					# peer closed
+					break
+				drained += len(chunk)
+				if drained > 512 * 1024:  # hard cap ~512KB
+					break
 		finally:
-			# restore blocking/timeout for real read
-			with self.send_lock:
-				self.sock.setblocking(True)
-				self.sock.settimeout(self.session.metadata.get("tcp_timeout", 0.5))
-		logger.debug("[%s] Drain complete", time.strftime("%H:%M:%S"))
+			# restore blocking/timeout for real work
+			self.sock.setblocking(True)
+			self.sock.settimeout(self.session.metadata.get("tcp_timeout", 0.5))
+		logger.debug("[%s] Drain complete (%d bytes)", time.strftime("%H:%M:%S"), drained)
 
 	def send(self, cmd: str,
 			 op_id: str = "console",
@@ -205,9 +220,11 @@ class TcpCommandRouter:
 					break
 				chunks.append(data)
 				got_any = True
-				joined = b"".join(chunks)
-				if start in joined and end in joined:
-					break
+				if chunks:
+					joined = b"".join(chunks)
+
+					if start in joined and end in joined:
+						break
 
 		# Set timeout for recv
 		with self.send_lock:
@@ -215,14 +232,14 @@ class TcpCommandRouter:
 			self.sock.settimeout(timeout)
 
 		try:
-			reader = threading.Thread(target=_reader, daemon=True).start()
+			reader = threading.Thread(target=_reader, daemon=True)
+			reader.start()
+			reader.join(timeout if timeout is not None else None)
 
 		except (ConnectionResetError, BrokenPipeError, OSError, ConnectionError) as e:
 			logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
 			if transfer_use:
 				raise ConnectionError("Connection Error while reading data over TCP socket")
-				
-		reader.join()
 
 		# Restore timeout
 		with self.send_lock:

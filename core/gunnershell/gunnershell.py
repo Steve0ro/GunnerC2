@@ -9,20 +9,15 @@ import os, sys
 import re
 import base64
 from pathlib import Path
+import posixpath
 import argparse
 from core.module_loader import load_module, discover_module_files, search_modules, MODULE_DIR as BASE_MODULE_DIR
 from core.session_handlers.session_manager import resolve_sid
-from core.utils import print_help, print_gunnershell_help, gunnershell_commands
+from core.utils import print_help, print_gunnershell_help
+from core.help_menus import gunnershell_commands_windows, gunnershell_commands_linux
 from core import shell, portfwd, utils
 from core.session_handlers import session_manager
 from core.banner import print_banner
-from core.gunnershell.filesystem_master import *
-from core.gunnershell import filesystem_master as filesystem
-from core.gunnershell import network_master as net
-from core.gunnershell import system_master as system
-from core.gunnershell import userinterface_master as ui
-from core.gunnershell import lateralmovement_master as lateral
-from core.gunnershell import activedirectory_master as ad
 from colorama import init, Fore, Style
 from core.prompt_manager import prompt_manager
 
@@ -74,13 +69,34 @@ class Gunnershell:
 	  gs.interact()
 	"""
 	def __init__(self, sid, op_id=None):
+		self.sid = sid
 		logger.debug(brightblue + f"IN __INIT__ GUNNERSHELL FUNC WITH SID {sid} AS OP {op_id} ABOUT TO RESOLVE SID" + reset)
 		real = resolve_sid(sid)
 		if not real or real not in session_manager.sessions:
 			logger.debug(brightred + f"INVALID SESSION {sid}" + reset)
 			raise ValueError(brightred + f"Invalid session: {sid}")
 
-		load()
+		self.session = session_manager.sessions[self.sid]
+		prompt = f"{UNDERLINE_ON}{brightblue}GunnerShell{UNDERLINE_OFF} > "
+		if not op_id:
+			prompt_manager.set_prompt(prompt)
+			self.prompt = prompt_manager.get_prompt()
+		else:
+			prompt_manager.set_prompt(prompt, op_id)
+			self.prompt = prompt_manager.get_prompt(op_id)
+
+		logger.debug(brightblue + f"SET GUNNERSHELL PROMPTS FOR SID {sid} AS OP {op_id}" + reset)
+
+		self.os_type = self.session.metadata.get("os","").lower()
+
+		if self.os_type == "windows":
+			self.commands = gunnershell_commands_windows
+
+		elif self.os_type == "linux":
+			self.commands = gunnershell_commands_linux
+
+		load(self.os_type)
+
 
 		display = next((a for a, rsid in session_manager.alias_map.items() if rsid == sid), sid)
 		self.sid = real
@@ -94,21 +110,8 @@ class Gunnershell:
 		self.SESSION_HIST = SESSION_HIST
 		logger.debug(brightblue + "SUCCESSFULLY SET GUNNERSHELL HISTORY FILES" + reset) 
 
-		
-		self.session = session_manager.sessions[self.sid]
-		prompt = f"{UNDERLINE_ON}{brightblue}GunnerShell{UNDERLINE_OFF} > "
-		if not op_id:
-			prompt_manager.set_prompt(prompt)
-			self.prompt = prompt_manager.get_prompt()
-		else:
-			prompt_manager.set_prompt(prompt, op_id)
-			self.prompt = prompt_manager.get_prompt(op_id)
-
-		logger.debug(brightblue + f"SET GUNNERSHELL PROMPTS FOR SID {sid} AS OP {op_id}" + reset)
-
 		# discover available modules once
 		self.available = discover_module_files(MODULE_DIR)
-		self.os_type = self.session.metadata.get("os","").lower()
 		if op_id and op_id != "console":
 			logger.debug(brightblue + f"GETTING PWD WITH OP ID: {op_id}" + reset)
 			self.cwd = self.run_pwd(to_console=False, op_id=op_id) or ""
@@ -148,14 +151,14 @@ class Gunnershell:
 			return p
 
 		base = self.cwd or ""
-		joiner = ntpath if "windows" in self.os_type else self.os.path
+		joiner = ntpath if "windows" in self.os_type else posixpath
 		return joiner.normpath(joiner.join(base, p))
 
 
 	def completer(self, text, state):
 		# simple tab completion: modules and built-in commands
 		try:
-			builtins = list(gunnershell_commands.keys())
+			builtins = list(self.commands.keys())
 			if not self.gunnerplant and "bofexec" in builtins:
 				builtins.remove("bofexec")
 			options  = [c for c in self.available + builtins if c.startswith(text)]
@@ -184,7 +187,8 @@ class Gunnershell:
 		module.run()
 
 	def run_pwd(self, to_console=True, op_id=None):
-		cmd_cls, n_consumed = get_command("pwd")
+		#cmd_cls, n_consumed = get_command("pwd")
+		cmd_cls, n_consumed = get_command(["pwd"])
 		if cmd_cls:
 			try:
 				instance = cmd_cls(self, to_console, op_id)
@@ -314,7 +318,8 @@ class Gunnershell:
 
 				# help
 				if len(parts) == 1:
-					out = print_gunnershell_help(to_console=to_console, op_id=op_id, gunnerplant=self.gunnerplant)
+					#out = print_gunnershell_help(to_console=to_console, op_id=op_id, gunnerplant=self.gunnerplant)
+					out = print_gunnershell_help(to_console=to_console, op_id=op_id, gunnerplant=self.gunnerplant, os_type=self.os_type)
 					if out:
 						return out
 
@@ -323,12 +328,12 @@ class Gunnershell:
 
 				# help <command>
 				elif len(parts) == 2:
-					print_gunnershell_help(parts[1])
+					print_gunnershell_help(parts[1], os_type=self.os_type)
 					return
 
 				# help <command> <subcommand>
 				elif len(parts) == 3:
-					print_gunnershell_help(f"{parts[1]} {parts[2]}")
+					print_gunnershell_help(f"{parts[1]} {parts[2]}", os_type=self.os_type)
 					return
 
 				else:

@@ -8,6 +8,7 @@ import ipaddress
 import tempfile
 import datetime
 import threading
+import time
 
 from core.listeners.base import Listener, register_listener, socket_to_listener, _reg_lock
 from core import utils
@@ -131,6 +132,8 @@ class TcpListener(Listener):
 		self.ip = ip
 		self.port = port
 		self.is_ssl = (self.transport == "tls")
+		# keep op_id so the worker thread can use it safely
+		self.op_id = op_id
 
 		if to_console:
 			set_output_context(to_console=True)
@@ -216,14 +219,61 @@ class TcpListener(Listener):
 		# signal and close
 		self._stop_event.set()
 		try:
+			# remove mapping so nothing else references this socket
+			with _reg_lock:
+				try:
+					if self.is_ssl:
+						utils.tls_listener_sockets.pop(f"tls-{self.ip}:{self.port}", None)
+					else:
+						utils.tcp_listener_sockets.pop(f"tcp-{self.ip}:{self.port}", None)
+				except Exception:
+					pass
 			self.server.close()
 		except:
 			pass
+			
 		if self._thread:
 			self._thread.join(timeout)
 
 	def is_alive(self) -> bool:
 		return bool(self._thread and self._thread.is_alive())
+
+	def _probe_shell(self, sock) -> bool:
+		"""
+		Very small, cross-platform liveness check:
+		send 'echo __gunner__' and wait briefly for any reply containing the marker.
+		If nothing comes back, treat it as a stray connect and drop it.
+		"""
+		marker = "__gunner__"
+		try:
+			sock.settimeout(0.8)
+			try:
+				sock.sendall(f"echo {marker}\n".encode())
+			except Exception:
+				# try CRLF variant once
+				try:
+					sock.sendall(f"echo {marker}\r\n".encode())
+				except Exception:
+					return False
+
+			deadline = time.time() + 0.8
+			data = b""
+			while time.time() < deadline:
+				try:
+					chunk = sock.recv(4096)
+				except socket.timeout:
+					break
+				if not chunk:
+					break
+				data += chunk
+				if marker.encode() in data:
+					return True
+			return False
+		finally:
+			try:
+				sock.settimeout(None)
+			except Exception:
+				pass
 
 	def run_loop(self, stop_event: threading.Event, context):
 		"""
@@ -250,10 +300,18 @@ class TcpListener(Listener):
 					continue
 				client.settimeout(None)
 
-			# register session
+			"""# ---- NEW: liveness probe before we register anything ----
+			if not self._probe_shell(client):
+				# no echo -> likely a stray connect / port scan
+				try: client.close()
+				except Exception: pass
+				continue"""
+
+			# register only after we’ve seen the echo
 			sid = utils.gen_session_id()
 			session_manager.register_tcp_session(sid, client, self.is_ssl)
 			self.sessions.append(sid)
+ 
 
 			transport_notification = ("TLS" if self.is_ssl else "TCP")
 			set_output_context(world_wide=True)

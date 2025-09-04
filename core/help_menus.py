@@ -1,4 +1,4 @@
-gunnershell_commands = {
+gunnershell_commands_windows = {
 	"list":    "Show all available modules.",
 	"gunnerid": "Show the current session ID for this GunnerShell.",
 	"help":    "Show this help menu.",
@@ -614,6 +614,187 @@ Usage: help kerbrute <subcommand>""",
 	-u <user|file|list> Single user, comma-sep list, or file of users"""
 	},
  }
+
+gunnershell_commands_linux = {
+    "ls": """\
+ls [-a] [-l] [-h] [<path>]
+List directory contents on the remote Linux host.
+
+Options:
+  -a            Include entries starting with '.' (hidden files)
+  -l            Long listing: permissions, links, owner, group, size, time
+  -h            Human-readable sizes (used with -l)
+
+Behavior:
+  • <path> is optional; defaults to the remote working directory.
+  • Globs (e.g., *.log) are expanded by the remote shell.
+  • Output is emitted verbatim from the agent.
+
+Examples:
+  ls
+  ls -alh /var/log
+  ls *.conf
+""",
+
+    "cd": """\
+cd <path>
+Change the remote working directory and print the resulting path.
+
+Notes:
+  • Accepts absolute or relative paths (., ..).
+  • On success this command prints the final directory (via 'pwd'), and the
+    shell updates the session’s current directory (gs.cwd) accordingly.
+  • Tilde expansion is handled by the remote shell: e.g., cd ~, cd ~/bin.
+
+Examples:
+  cd /etc
+  cd ..
+  cd ~/projects
+""",
+
+    "cat": """\
+cat <file>
+Print the contents of a remote file to the console.
+
+Notes:
+  • Treats the target as text; binary files may print garbled output.
+  • For large/binary files, prefer 'download' instead of 'cat'.
+
+Examples:
+  cat /etc/os-release
+  cat ./notes.txt
+""",
+
+    "mkdir": """\
+mkdir [-p] <dir>
+Create a directory on the remote host.
+
+Options:
+  -p            Create intermediate directories as needed (no error if exists)
+
+Behavior:
+  • Prints 'OK' on success.
+  • Without -p, the command fails if a parent does not exist.
+
+Examples:
+  mkdir uploads
+  mkdir -p /opt/tools/bin
+""",
+
+    "rmdir": """\
+rmdir <path>
+Remove a directory tree (recursive & force).
+
+Behavior:
+  • Internally runs 'rm -rf <path>'.
+  • Non-empty directories are removed without prompting.
+  • Prints 'OK' on success.
+
+Danger:
+  • This is destructive. Double-check the target path before running.
+
+Examples:
+  rmdir /tmp/testdir
+  rmdir ./build
+""",
+
+    "rm": """\
+rm [-r] [-f] <path>
+Remove remote files or directories.
+
+Options:
+  -r            Recurse into directories
+  -f            Do not prompt; ignore non-existent files
+
+Behavior:
+  • Prints 'OK' on success.
+  • Without -r, removing a directory fails.
+
+Danger:
+  • This is destructive. Use with care—especially with wildcards.
+
+Examples:
+  rm file.tmp
+  rm -f /var/tmp/*.log
+  rm -rf ./dist
+""",
+
+    "mv": """\
+mv <src> <dst>
+Move or rename a file/directory on the remote host.
+
+Behavior:
+  • Overwrites the destination if it already exists and is a file.
+  • Moving into an existing directory places <src> inside that directory.
+  • Prints 'OK' on success.
+
+Examples:
+  mv notes.txt notes.old.txt
+  mv app.log /var/log/app.log
+  mv mydir /opt/tools/
+""",
+
+    "cp": """\
+cp [-r] <src> <dst>
+Copy files or directories on the remote host.
+
+Options:
+  -r            Copy directories recursively
+
+Behavior:
+  • Overwrites destination files by default.
+  • Without -r, copying a directory fails.
+  • Prints 'OK' on success.
+
+Examples:
+  cp config.yaml /etc/myapp/config.yaml
+  cp -r ./static /var/www/html/static
+""",
+
+    "touch": """\
+touch <path>
+Create an empty file or update the modification time of an existing file.
+
+Behavior:
+  • Creates the file if it does not exist.
+  • Updates atime/mtime if it exists.
+  • Prints 'OK' on success.
+
+Examples:
+  touch /tmp/marker
+  touch ./README.md
+""",
+
+    "stat": """\
+stat <path>
+Show file metadata (mode, links, owner:group, size, mtime, name).
+
+Output columns:
+  %A   Permissions/mode (e.g., -rw-r--r--)
+  %h   Hard-link count
+  %U:%G  Owner and group
+  %s   Size in bytes
+  %y   Modification time
+  %n   File name
+
+Examples:
+  stat /etc/passwd
+  stat ./build/artifact.tar.gz
+""",
+
+    "checksum": """\
+checksum <file>
+Compute the SHA-256 checksum of a file.
+
+Behavior:
+  • Uses 'sha256sum' when available; falls back to 'openssl dgst -sha256'.
+  • Output format typically: '<hex-digest>  <path>'.
+
+Examples:
+  checksum /bin/bash
+  checksum ./payload.bin
+""",
+}
 
 commands = {
 	"start": {

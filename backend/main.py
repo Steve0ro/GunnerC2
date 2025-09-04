@@ -13,9 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.teamserver import auth_manager as auth
 
 # 🔧 use relative imports inside the backend package
-from .auth import router as auth_router
+from .websocket_operators import router as operators_ws_router
 from .listeners import router as listeners_router
-from .sessions import router as sessions_router
+from .websocket_sessions import router as sessions_ws_router
 from .files import router as files_router
 from .payloads import router as payloads_router
 from .websocket_console import router as ws_router
@@ -41,9 +41,10 @@ def _startup():
         auth.add_operator("admin", "admin", "admin")
 
 # Routers
-app.include_router(auth_router, prefix="/auth", tags=["auth"])
+app.include_router(operators_ws_router)
 app.include_router(listeners_router, prefix="/listeners", tags=["listeners"])
-app.include_router(sessions_router, prefix="/sessions", tags=["sessions"])
+#app.include_router(sessions_router, prefix="/sessions", tags=["sessions"])
+app.include_router(sessions_ws_router)
 app.include_router(files_router, prefix="/files", tags=["files"])
 app.include_router(payloads_router, prefix="/payloads", tags=["payloads"])
 app.include_router(ws_router, tags=["websocket"])

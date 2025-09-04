@@ -15,10 +15,24 @@ class OperatorCreate(BaseModel):
     password: str
     role: str  # "admin" or "operator"
 
+class OperatorUpdate(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = None
+
 class OperatorOut(BaseModel):
     id: str
     username: str
     role: str
+
+class NewListenerRequest(BaseModel):
+    type: str
+    bind_ip: str
+    port: int
+    profile: str | None = None
+    certfile: str | None = None
+    keyfile: str | None = None
+
 
 class ListenerOut(BaseModel):
     id: str
@@ -26,13 +40,7 @@ class ListenerOut(BaseModel):
     bind_ip: str
     port: int
     status: str
-    profile: Optional[str] = None
-
-class NewListenerRequest(BaseModel):
-    type: str
-    bind_ip: str
-    port: int
-    profile: Optional[str] = None
+    profile: str | None = None
 
 class SessionSummary(BaseModel):
     id: str

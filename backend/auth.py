@@ -5,7 +5,7 @@ from typing import Optional
 from core.teamserver import auth_manager as auth
 
 from .dependencies import create_access_token
-from .schemas import LoginRequest, TokenResponse, OperatorCreate, OperatorOut
+from .schemas import LoginRequest, TokenResponse, OperatorCreate, OperatorOut, OperatorUpdate
 
 router = APIRouter()
 

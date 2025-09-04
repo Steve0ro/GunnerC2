@@ -1,16 +1,8 @@
-"""
-Gunnershell command registry and loader.
-
-This defines a Command base class, a @register decorator,
-and on import will walk the subdirectories (filesystem,
-system, lateral_movement, network, activedirectory,
-userinterface), import every .py module, and collect all
-commands into COMMANDS[name] = CommandClass.
-"""
 import logging
 logger = logging.getLogger(__name__)
 
 import os
+import sys
 import argparse
 from abc import ABC, abstractmethod
 import pkgutil
@@ -96,18 +88,32 @@ def list_commands() -> list[str]:
 	return sorted(COMMANDS.keys())
 
 
-def load():
+def load(os_type: str | None = None):
     """
-    Import every .py under core/gunnershell/commands/{filesystem,system,...}
-    so that @register() hooks can run and populate COMMANDS.
+    Import command modules so that @register() hooks populate COMMANDS.
+    Layout supported:
+      core/gunnershell/commands/common/...
+      core/gunnershell/commands/windows/...
+      core/gunnershell/commands/linux/...
+    If os_type is provided, only that subtree (+ common) is imported.
     """
     # import the commands package itself so we can grab its __path__
     pkg = importlib.import_module(__package__)  # __package__ == "core.gunnershell.commands"
 
-    for finder, module_name, is_pkg in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
+    target = (os_type or "").lower()
+    for _, module_name, is_pkg in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
         # skip our own base module
         if module_name == pkg.__name__ + ".base":
             continue
+
+        # Filter by OS subtree unless it's common
+        if ".windows." in module_name and target and "win" not in target:
+            continue
+        if ".linux." in module_name and target and "linux" not in target:
+            continue
+        if ".common." in module_name or ".windows." in module_name or ".linux." in module_name or module_name.count(".") >= 4:
+            pass  # allowed
+        # else allow legacy modules at the top until everything is moved
 
         logger.debug(f"Loading command module {module_name}")
         try:

@@ -3,6 +3,8 @@ import requests
 import urllib.parse
 import os
 
+from typing import Tuple, Any, Dict
+
 class APIClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
@@ -75,8 +77,65 @@ class APIClient:
         return r.json()
 
     def stop_listener(self, listener_id: str):
-        r = requests.delete(f"{self.base_url}/listeners/{listener_id}", headers=self.headers)
+        r = requests.delete(
+            f"{self.base_url}/listeners/{listener_id}",
+            headers=self.headers,
+            timeout=5,                      # <-- prevent GUI hang
+        )
         r.raise_for_status()
+        return r.json()
+
+    # ---------- listener helpers (pure client-side shims) ----------
+    def listener_can_bind(self, host: str, port: int, transport: str) -> Tuple[bool, str]:
+        """
+        Client-side stub so the UI can call a 'Test Bind' hook without a backend change.
+        We can't test server's bindability from the GUI, so just do fast local validation
+        and let the server be the source of truth on create().
+        """
+        try:
+            port = int(port)
+        except Exception:
+            return False, "Port must be an integer"
+        if not (1 <= port <= 65535):
+            return False, "Port out of range (1-65535)"
+        host = (host or "").strip()
+        if not host:
+            return False, "Host/IP required"
+        t = (transport or "").lower()
+        if t not in ("tcp", "http", "https"):
+            return False, "Unknown transport"
+        return True, "Looks OK (server will validate on start)"
+
+    def listener_name_available(self, name: str) -> Tuple[bool, str]:
+        """
+        Optional duplicate check hook; you don’t expose a name server-side, so we
+        just say OK. If later you add 'name' to the backend, update this.
+        """
+        return True, ""
+
+    # New: friendly mapper used by the dialog (supports https/tls certs)
+    def create_listener_v2(self, cfg: dict):
+        """
+        cfg keys: name (opt), transport, host, port, certfile?, keyfile?
+        """
+        payload = {
+            "type": cfg.get("transport"),
+            "bind_ip": cfg.get("host"),
+            "port": int(cfg.get("port", 0)),
+            "profile": None,  # unchanged; your backend ignores/uses as needed
+        }
+        # Pass-through TLS bits if backend supports them
+        if cfg.get("transport") in ("https", "tls"):
+            if "certfile" in cfg:
+                payload["certfile"] = cfg["certfile"]
+            if "keyfile" in cfg:
+                payload["keyfile"] = cfg["keyfile"]
+        r = requests.post(f"{self.base_url}/listeners", headers=self.headers, json=payload)
+        if not r.ok:
+            try:
+                raise Exception(r.json().get("detail"))
+            except Exception:
+                raise Exception(r.text)
         return r.json()
 
     # ---------- sessions ----------
@@ -144,4 +203,31 @@ class APIClient:
         r = requests.get(f"{self.base_url}/payloads/linux/bash", headers=self.headers,
                          params={"transport": transport, "host": host, "port": port})
         r.raise_for_status()
+        return r.text
+
+    # ---------- New, unified payload API ----------
+    def generate_windows_payload(self, cfg: Dict) -> str:
+        """
+        Keys: format(ps1|exe|gunnerplant), transport(tcp|tls|http|https), host, port,
+              obs?, no_child?, beacon?, jitter?, headers?, useragent?, accept?, byte_range?,
+              profile?, stager_ip?, stager_port?
+        """
+        r = requests.post(f"{self.base_url}/payloads/windows", headers=self.headers, json=cfg, timeout=30)
+        if not r.ok:
+            try:
+                raise Exception(r.json().get("detail"))
+            except Exception:
+                raise Exception(r.text)
+        return r.text
+
+    def generate_linux_payload(self, cfg: Dict) -> str:
+        """
+        Keys: format('bash'), transport(tcp|http), host, port, obs?, beacon?, use_ssl?
+        """
+        r = requests.post(f"{self.base_url}/payloads/linux", headers=self.headers, json=cfg, timeout=30)
+        if not r.ok:
+            try:
+                raise Exception(r.json().get("detail"))
+            except Exception:
+                raise Exception(r.text)
         return r.text

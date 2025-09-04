@@ -21,9 +21,14 @@ def _sess_to_summary(sess) -> SessionSummary:
         "last_checkin": getattr(sess, "last_seen", None) or getattr(sess, "created_at", None),
     }
 
+def _initialized(sess) -> bool:
+    meta = getattr(sess, "metadata", {}) or {}
+    # Require minimal identity before surfacing to UI
+    return bool(meta.get("user"))
+
 @router.get("", response_model=list[SessionSummary])
 def list_sessions():
-    return [_sess_to_summary(s) for s in session_manager.sessions.values()]
+    return [_sess_to_summary(s) for s in session_manager.sessions.values() if _initialized(s)]
 
 @router.get("/{sid}", response_model=SessionSummary)
 def get_session(sid: str):

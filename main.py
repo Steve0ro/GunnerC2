@@ -703,7 +703,7 @@ def process_command(user: str, to_console: bool = True, to_op: str = None):
 
 		# call the exact same TCP listener, but force SSL on
 		
-		threading.Thread(target=create_listener, args=(parsed.ip, parsed.port, "tls", to_console, to_op, None), daemon=True).start()
+		threading.Thread(target=create_listener, args=(parsed.ip, parsed.port, "tls", to_console, to_op, None, parsed.certfile, parsed.keyfile), daemon=True).start()
 		return
 
 	elif user.startswith("start tcp"):

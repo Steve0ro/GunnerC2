@@ -1,5 +1,5 @@
 # gui/main_window.py
-from PyQt5.QtWidgets import QMainWindow
+from PyQt5.QtWidgets import QMainWindow, QApplication
 
 from dashboard import Dashboard
 
@@ -9,6 +9,9 @@ class MainWindow(QMainWindow):
         self.api = api
         self.setWindowTitle("GunnerC2 — Console")
         self.resize(1240, 780)
+
+        # Inherit the app icon so titlebar/taskbar use it
+        self.setWindowIcon(QApplication.windowIcon())
 
         # New: Dashboard with graph + bottom tab browser
         self.dashboard = Dashboard(api)

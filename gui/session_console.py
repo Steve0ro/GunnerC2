@@ -1,14 +1,18 @@
 # gui/session_console.py
 from PyQt5.QtWidgets import QWidget, QPlainTextEdit, QLineEdit, QPushButton, QHBoxLayout, QVBoxLayout, QShortcut
-from PyQt5.QtCore import QUrl, Qt
+from PyQt5.QtCore import QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtNetwork import QAbstractSocket
 from PyQt5.QtWebSockets import QWebSocket
 
 class SessionConsole(QWidget):
+    files_requested = pyqtSignal(str, str)  # sid, hostname
+
     def __init__(self, api, sid: str, hostname: str):
         super().__init__()
         self.api = api; self.sid = sid
+        self.sid = sid
+        self.hostname = hostname
 
         self.out = QPlainTextEdit(); self.out.setReadOnly(True)
         self.inp = QLineEdit(); self.btn_send = QPushButton("Send")
@@ -21,7 +25,7 @@ class SessionConsole(QWidget):
 
         self.btn_send.clicked.connect(self._send)
         self.inp.returnPressed.connect(self._send)
-        self.btn_files.clicked.connect(self._files)
+        self.btn_files.clicked.connect(self._on_files_clicked)
 
         ws_url = self.api.base_url.replace("http", "ws", 1) + f"/ws/sessions/{sid}?token={self.api.token}"
         self.ws = QWebSocket()
@@ -65,7 +69,6 @@ class SessionConsole(QWidget):
         self.ws.sendTextMessage(cmd)
         self.inp.clear()
 
-    def _files(self):
-        from file_browser import FileBrowser
-        dlg = FileBrowser(self.api, self.sid)
-        dlg.exec_()
+    # Files now handled by Dashboard (opens a tab)
+    def _on_files_clicked(self):
+        self.files_requested.emit(self.sid, self.hostname)

@@ -35,7 +35,13 @@ def program(ip, port, cfg=None, scheme="https"):
 		post_headers = _emit_header_lines(cfg.headers_post, "postReq", is_post=True)
 		accept_line = f'getReq.Headers.Accept.ParseAdd("{_cs_escape(cfg.accept)}");' if cfg.accept else ""
 		host_line   = f'getReq.Headers.TryAddWithoutValidation("{_cs_escape("Host")}", "{_cs_escape(cfg.host)}");'     if cfg.host else ""
-		range_line  = f'getReq.Headers.Range = new RangeHeaderValue(0, {int(cfg.byte_range)});'  if cfg.byte_range else ""
+		#range_line  = f'getReq.Headers.Range = new RangeHeaderValue(0, {int(cfg.byte_range)});'  if cfg.byte_range else ""
+		try:
+			if getattr(cfg, "byte_range", None) is not None and str(cfg.byte_range).strip().isdigit():
+				range_line = f'getReq.Headers.Range = new RangeHeaderValue(0, {int(cfg.byte_range)});'
+		except Exception:
+			range_line = ""
+
 		accept_post = f'postReq.Headers.Accept.ParseAdd("{_cs_escape(cfg.accept_post)})";' if cfg.accept_post else ""
 		host_post = f'postReq.Headers.TryAddWithoutValidation("{_cs_escape("Host")}", "{_cs_escape(cfg.host_post)}");' if cfg.host_post else ""
 		# we keep your two sleeps but drive them from interval if provided

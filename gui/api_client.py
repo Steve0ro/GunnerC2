@@ -102,7 +102,7 @@ class APIClient:
         if not host:
             return False, "Host/IP required"
         t = (transport or "").lower()
-        if t not in ("tcp", "http", "https"):
+        if t not in ("tcp", "http", "https", "tls"):
             return False, "Unknown transport"
         return True, "Looks OK (server will validate on start)"
 
@@ -124,6 +124,10 @@ class APIClient:
             "port": int(cfg.get("port", 0)),
             "profile": None,  # unchanged; your backend ignores/uses as needed
         }
+
+        if cfg.get("name"):
+            payload["name"] = cfg["name"]
+
         # Pass-through TLS bits if backend supports them
         if cfg.get("transport") in ("https", "tls"):
             if "certfile" in cfg:
@@ -212,7 +216,7 @@ class APIClient:
               obs?, no_child?, beacon?, jitter?, headers?, useragent?, accept?, byte_range?,
               profile?, stager_ip?, stager_port?
         """
-        r = requests.post(f"{self.base_url}/payloads/windows", headers=self.headers, json=cfg, timeout=30)
+        r = requests.post(f"{self.base_url}/payloads/windows", headers=self.headers, json=cfg, timeout=180)
         if not r.ok:
             try:
                 raise Exception(r.json().get("detail"))
@@ -224,7 +228,7 @@ class APIClient:
         """
         Keys: format('bash'), transport(tcp|http), host, port, obs?, beacon?, use_ssl?
         """
-        r = requests.post(f"{self.base_url}/payloads/linux", headers=self.headers, json=cfg, timeout=30)
+        r = requests.post(f"{self.base_url}/payloads/linux", headers=self.headers, json=cfg, timeout=180)
         if not r.ok:
             try:
                 raise Exception(r.json().get("detail"))

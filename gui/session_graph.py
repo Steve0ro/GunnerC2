@@ -8,15 +8,15 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import (
-	QPoint, QPointF, QRectF, Qt, pyqtSignal, QSize, QTimer, QLineF, QEvent
+	QPoint, QPointF, QRectF, Qt, pyqtSignal, QSize, QTimer, QLineF, QEvent, QRect
 )
 from PyQt5.QtGui import (
-	QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+	QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QKeySequence
 )
 from PyQt5.QtWidgets import (
 	QGraphicsItem, QGraphicsObject, QGraphicsScene, QGraphicsSimpleTextItem,
 	QGraphicsView, QHBoxLayout, QMenu, QPushButton, QStyleOptionGraphicsItem,
-	QWidget, QScrollBar
+	QWidget, QScrollBar, QApplication, QLineEdit, QComboBox, QToolButton, QVBoxLayout, QShortcut
 )
 
 try:
@@ -51,6 +51,10 @@ ARROW_GAP = 6.0  # pixels to stop short of the C2 icon edge
 NODE_W = 86
 NODE_H = 66
 NODE_RADIUS = 10
+
+MIN_SEG_EACH_SIDE = 70.0   # keep at least this much line on both sides of the label
+ARROW_HEAD_LEN    = 10.0   # matches your arrow size
+LABEL_EDGE_PAD    = 0.0    # extra space outside label (0 = cut exactly at edges)
 
 C2_SIZE = QSize(60, 60)
 PROTOCOL_FONT = QFont("DejaVu Sans Mono", 10, QFont.DemiBold)
@@ -313,6 +317,7 @@ class AgentItem(QGraphicsObject):
 		self._label.setFont(LABEL_FONT)
 		#self._label.setPos(-self._label.boundingRect().width()/2, NODE_H/2 + 6)
 		self._label.setPos(-self._label.boundingRect().width()/2, h/2 + 6)
+		self._label.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
 
 	def boundingRect(self) -> QRectF:
 		br = self._rect.adjusted(-4, -4, 4, 20)
@@ -355,24 +360,38 @@ class AgentItem(QGraphicsObject):
 		m = QMenu()
 		act_console = m.addAction("Open Console")
 		act_gs      = m.addAction("Open GunnerShell")
-		act_kill = m.addAction("Kill Session")
-		# PyQt5 can return QPoint or QPointF here; normalize to QPoint.
+		act_kill    = m.addAction("Kill Session")
+
+		copy_menu = _FastCloseMenu("Copy", m, leave_delay_ms=80)  # faster close
+		m.addMenu(copy_menu)
+		act_c_sid   = copy_menu.addAction("SID")
+		act_c_user  = copy_menu.addAction("Username")
+		act_c_host  = copy_menu.addAction("Hostname")
+		act_c_os    = copy_menu.addAction("OS")
+		act_c_proto = copy_menu.addAction("Protocol")
+
 		sp = event.screenPos()
-		pos = sp.toPoint() if hasattr(sp, "toPoint") else sp  # QPointF -> QPoint
+		pos = sp.toPoint() if hasattr(sp, "toPoint") else sp
 		if not isinstance(pos, QPoint):
-			# last resort: let Qt figure it out via the cursor position
 			from PyQt5.QtGui import QCursor
 			pos = QCursor.pos()
 		chosen = m.exec_(pos)
 
 		if chosen == act_console:
 			self.open_console.emit(self.node.sid, self.node.hostname)
-
 		elif chosen == act_gs:
 			self.open_gunnershell.emit(self.node.sid, self.node.hostname)
-
 		elif chosen == act_kill:
 			self.kill_session.emit(self.node.sid, self.node.hostname)
+		elif chosen in (act_c_sid, act_c_user, act_c_host, act_c_os, act_c_proto):  # <--
+			val = (
+				self.node.sid if chosen == act_c_sid else
+				self.node.username if chosen == act_c_user else
+				self.node.hostname if chosen == act_c_host else
+				self.node.os if chosen == act_c_os else
+				self.node.protocol
+			)
+			QApplication.clipboard().setText(str(val))
 
 	# inform the scene/view to persist
 	def itemChange(self, change, value):
@@ -394,8 +413,8 @@ class C2Item(QGraphicsItem):
 		self.title = QGraphicsSimpleTextItem("C2", self)
 		self.title.setFont(TITLE_FONT)
 		self.title.setBrush(QBrush(LABEL_GRAY))
+		self.title.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
 		self.title.setPos(-self.title.boundingRect().width()/2, -h/2 - self.title.boundingRect().height() - 2)
-		#self.title.setPos(-self.title.boundingRect().width()/2, -h/2 - self.title.boundingRect().height() - 2)
 
 	def boundingRect(self) -> QRectF:
 		# include some padding and the "C2" title area
@@ -423,14 +442,18 @@ class EdgeItem(QGraphicsItem):
 
 		 # draw the line behind nodes
 		self.setZValue(-5)
-		self.setCacheMode(QGraphicsItem.NoCache)
+		self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
 
 		# --- label is a TOP-LEVEL item so it can float above everything ---
 		self.label = QGraphicsSimpleTextItem(self.protocol)   # no parent
 		self.label.setFont(PROTOCOL_FONT)
 		self.label.setBrush(QBrush(NEON))
 		self.label.setZValue(50)  # above C2 and agents
+		self.label.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
 		self._gap_pad_scene = 14.0  # scene-units padding around the text gap
+
+		self._seg1_end = None
+		self._seg2_start = None 
 
 		# don't consume mouse input
 		self.setAcceptedMouseButtons(Qt.NoButton)
@@ -491,13 +514,71 @@ class EdgeItem(QGraphicsItem):
 		tip = self._c2_tip_point(a, b)
 		mid = (b + tip) * 0.5
 
-		# make sure the top-level label is in the same scene
 		if self.scene() and self.label.scene() is None:
 			self.scene().addItem(self.label)
 
-		# center the label exactly at the midpoint (it scales with the scene)
+		# place the label first (centered on the line midpoint)
 		br = self.label.boundingRect()
 		self.label.setPos(mid.x() - br.width()/2, mid.y() - br.height()/2)
+
+		# line geometry
+		main = QLineF(b, tip)
+		L = main.length()
+		if L < 1e-6:
+			self.label.setVisible(False)
+			self._seg1_end = self._seg2_start = None
+			self.update(); return
+
+		# unit direction b -> tip
+		ux = (tip.x() - b.x()) / L
+		uy = (tip.y() - b.y()) / L
+
+		# label scene-rect (optionally expanded)
+		lb = self.label.mapRectToScene(self.label.boundingRect())
+		if LABEL_EDGE_PAD > 0.0:
+			lb = lb.adjusted(-LABEL_EDGE_PAD, -LABEL_EDGE_PAD, LABEL_EDGE_PAD, LABEL_EDGE_PAD)
+
+		# intersect the line with each rect edge; collect hits on the finite segment
+		edges = [
+			QLineF(lb.topLeft(),     lb.topRight()),
+			QLineF(lb.topRight(),    lb.bottomRight()),
+			QLineF(lb.bottomRight(), lb.bottomLeft()),
+			QLineF(lb.bottomLeft(),  lb.topLeft()),
+		]
+		hits = []
+		for e in edges:
+			ip = QPointF()
+			if main.intersect(e, ip) == QLineF.BoundedIntersection:
+				hits.append(ip)
+
+		# need two intersections to define the gap
+		if len(hits) < 2:
+			# If the label drifted off the line for any reason, just hide it.
+			self.label.setVisible(False)
+			self._seg1_end = self._seg2_start = None
+			self.update(); return
+
+		# sort intersections along the line by param t (projection)
+		def t_of(pt: QPointF) -> float:
+			return (pt.x() - b.x())*ux + (pt.y() - b.y())*uy
+		hits.sort(key=t_of)
+		p1, p2 = hits[0], hits[1]  # where the line enters/exits the label rect
+		gap_len = max(0.0, t_of(p2) - t_of(p1))
+
+		# do we have enough length to keep the label?
+		must_have = gap_len + 2*MIN_SEG_EACH_SIDE + (ARROW_HEAD_LEN * 0.6)
+		fits = L >= must_have
+
+		self.label.setVisible(fits)
+		if fits:
+			# store exact cut points (optionally nudge by LABEL_EDGE_PAD along the line)
+			if LABEL_EDGE_PAD > 0.0:
+				p1 = QPointF(p1.x() - ux*LABEL_EDGE_PAD, p1.y() - uy*LABEL_EDGE_PAD)
+				p2 = QPointF(p2.x() + ux*LABEL_EDGE_PAD, p2.y() + uy*LABEL_EDGE_PAD)
+			self._seg1_end = p1
+			self._seg2_start = p2
+		else:
+			self._seg1_end = self._seg2_start = None
 
 		self.update()
 
@@ -505,8 +586,10 @@ class EdgeItem(QGraphicsItem):
 		a = self.mapFromItem(self.src, 0, 0)
 		b = self.mapFromItem(self.dst, 0, 0)
 		rect = QRectF(a, b).normalized().adjusted(-12, -12, 12, 12)
-		lb = self.label.mapRectToParent(self.label.boundingRect())
-		return rect.united(lb)
+		if self.label.isVisible():
+			lb = self.label.mapRectToParent(self.label.boundingRect())
+			return rect.united(lb)
+		return rect
 
 	def paint(self, p: QPainter, opt: QStyleOptionGraphicsItem, widget=None):
 		a = self.mapFromItem(self.src, 0, 0)
@@ -517,17 +600,6 @@ class EdgeItem(QGraphicsItem):
 		L = math.hypot(v.x(), v.y())
 		if L < 1e-6:
 			return
-		ux, uy = v.x()/L, v.y()/L
-
-		mid = QPointF(b.x() + ux*(L*0.5), b.y() + uy*(L*0.5))
-
-		# label width in *scene units* (since it now scales with the scene)
-		label_scene_w = self.label.boundingRect().width()
-		gap_len_scene = label_scene_w + self._gap_pad_scene
-		half_gap = min(L * 0.45, gap_len_scene * 0.5)
-
-		seg1_end   = QPointF(mid.x() - ux*half_gap, mid.y() - uy*half_gap)
-		seg2_start = QPointF(mid.x() + ux*half_gap, mid.y() + uy*half_gap)
 
 		pen = QPen(NEON, 2.6)
 		if self.protocol in ("tls", "https"):
@@ -537,17 +609,25 @@ class EdgeItem(QGraphicsItem):
 		else:
 			pen.setStyle(Qt.SolidLine)
 
+		if not self.label.isVisible() or self._seg1_end is None or self._seg2_start is None:
+			if ARROW_GLOW:
+				glow = QPen(NEON_DIM, 5.0); glow.setStyle(pen.style())
+				p.setPen(glow); p.drawLine(QLineF(b, tip))
+			p.setPen(pen); p.drawLine(QLineF(b, tip))
+			self._draw_arrow_head_into_c2(p, b, tip)
+			return
+
+		# draw two segments that stop exactly at the label edges
 		if ARROW_GLOW:
 			glow = QPen(NEON_DIM, 5.0); glow.setStyle(pen.style())
 			p.setPen(glow)
-			p.drawLine(QLineF(b, seg1_end))
-			p.drawLine(QLineF(seg2_start, tip))
+			p.drawLine(QLineF(b, self._seg1_end))
+			p.drawLine(QLineF(self._seg2_start, tip))
 
 		p.setPen(pen)
-		p.drawLine(QLineF(b, seg1_end))
-		p.drawLine(QLineF(seg2_start, tip))
-
-		self._draw_arrow_head_into_c2(p, seg2_start, tip)
+		p.drawLine(QLineF(b, self._seg1_end))
+		p.drawLine(QLineF(self._seg2_start, tip))
+		self._draw_arrow_head_into_c2(p, self._seg2_start, tip)
 
 	def _draw_arrow_head_into_c2(self, p: QPainter, tail: QPointF, tip: QPointF):
 		"""Draw a triangular arrowhead whose tip is at `tip` (near the C2)."""
@@ -594,6 +674,15 @@ class GraphView(QGraphicsView):
 		# First real placement after the view is on screen
 		QTimer.singleShot(0, self._reposition_buttons)
 
+		# place-holder for external top-right overlays (e.g., find panel)
+		self._top_right_widgets = []
+
+	# Allow parent to register a widget we should anchor at top-right
+	def register_top_right_widget(self, w: QWidget):
+		if w and w not in self._top_right_widgets:
+			self._top_right_widgets.append(w)
+			self._reposition_top_right_widgets()
+
 	def _build_zoom_buttons(self):
 		# Overlay container at top-left of the VIEW (not the scene)
 		self._overlay = QWidget(self)
@@ -617,6 +706,7 @@ class GraphView(QGraphicsView):
 	def resizeEvent(self, e):
 		super().resizeEvent(e)
 		self._reposition_buttons()
+		self._reposition_top_right_widgets()
 
 	def _reposition_buttons(self):
 		# Anchor at the VIEW's top-left
@@ -625,6 +715,22 @@ class GraphView(QGraphicsView):
 		self._overlay.move(margin, margin)
 		self._btn_plus.move(0, 0)
 		self._btn_minus.move(0, self._btn_plus.height() + 8)
+
+	def _reposition_top_right_widgets(self):
+		if not self._top_right_widgets:
+			return
+		margin = 12
+		vw = self.viewport().width()
+		x = vw - margin
+		# stack from right edge inwards (only one now, but extensible)
+		for w in self._top_right_widgets:
+			if not w.isVisible():
+				continue
+			sz = w.size()
+			x = vw - margin - sz.width()
+			w.move(x, margin)
+			# next widget (if any) would be placed to the *left* of this one
+			vw = x
 
 	def wheelEvent(self, event):
 		# angleDelta is in 1/8th degree units; 120 ~= one notch
@@ -645,6 +751,7 @@ class GraphView(QGraphicsView):
 		# Make sure buttons stick to the top-left of the viewport
 		if obj is self.viewport() and ev.type() in (QEvent.Resize, QEvent.Show, QEvent.LayoutRequest):
 			self._reposition_buttons()
+			self._reposition_top_right_widgets()
 		return super().eventFilter(obj, ev)
 
 	def _apply_zoom(self, factor: float):
@@ -795,6 +902,36 @@ class GraphView(QGraphicsView):
 		self._zoom = self.transform().m11()
 		self._reposition_buttons()
 
+	def zoom_overlay_rect_global(self) -> QRect:
+		"""Global QRect of the zoom overlay; empty if not built yet."""
+		ov = getattr(self, "_overlay", None)
+		if ov is None:
+			return QRect()
+		top_left = ov.mapToGlobal(QPoint(0, 0))
+		return QRect(top_left, ov.size())
+
+	def set_zoom_overlay_visible(self, visible: bool):
+		ov = getattr(self, "_overlay", None)
+		if ov is not None:
+			ov.setVisible(bool(visible))
+
+class _FastCloseMenu(QMenu):
+	def __init__(self, title: str, parent=None, leave_delay_ms: int = 80):
+		super().__init__(title, parent)
+		self._leave_timer = QTimer(self)
+		self._leave_timer.setSingleShot(True)
+		self._leave_timer.setInterval(leave_delay_ms)
+		self._leave_timer.timeout.connect(self.close)
+
+	def enterEvent(self, e):
+		self._leave_timer.stop()
+		super().enterEvent(e)
+
+	def leaveEvent(self, e):
+		# close quickly after the cursor leaves the submenu rect
+		self._leave_timer.start()
+		super().leaveEvent(e)
+
 
 # ---------- main widget ----------
 class SessionGraph(QWidget):
@@ -844,9 +981,74 @@ class SessionGraph(QWidget):
 		self._sessions_ws = None
 		self._try_start_ws()
 
+		# ---- filtering state (menus drive these) ----
+		self._show_windows = True
+		self._show_linux = True
+		self._allowed_protocols = {"tcp", "tls", "http", "https"}
+
+		# ---- Find panel state ----
+		self._search_results: list[AgentItem] = []
+		self._search_index: int = -1
+
+		# Build the floating find panel (top-right of the view)
+		self._build_find_panel()
+		# Ctrl+F to open
+		QShortcut(QKeySequence.Find, self, activated=self._show_find_panel)
+
 	@property
 	def sessions_ws(self):
 		return self._sessions_ws
+
+	# ----- Filter Functions -----
+	def visit_c2(self):
+		"""Smoothly zoom/pan to the C2 node."""
+		target = self.c2.scenePos()
+		target_zoom = max(DBLCLICK_BASE_TARGET_ZOOM, 2.2)
+		try:
+			# use the view’s smooth flight
+			self.view._fly_to(target, target_zoom)
+		except Exception:
+			# fallback: just center
+			self.view.centerOn(self.c2)
+
+	def set_os_filter(self, show_windows: Optional[bool] = None, show_linux: Optional[bool] = None):
+		if show_windows is not None:
+			self._show_windows = bool(show_windows)
+		if show_linux is not None:
+			self._show_linux = bool(show_linux)
+		self._apply_filters_to_items()
+
+	def set_transports_filter(self, protocols: set[str]):
+		self._allowed_protocols = {str(p).lower() for p in (protocols or set())}
+		self._apply_filters_to_items()
+
+	def _apply_filters_to_items(self):
+		# Apply to agent nodes
+		for it in self.agent_items.values():
+			osname = (it.node.os or "").lower()
+			is_win = osname.startswith("win")
+			is_lin = osname.startswith("lin") or "linux" in osname
+
+			# Unknown OS stays visible unless explicitly excluded by protocol
+			os_ok = ((is_win and self._show_windows) or
+					 (is_lin and self._show_linux) or
+					 (not is_win and not is_lin))
+
+			proto_ok = (it.node.protocol.lower() in self._allowed_protocols) if self._allowed_protocols else False
+			vis = bool(os_ok and proto_ok)
+			it.setVisible(vis)
+
+		# Apply to edges + their floating labels
+		for e in self.edge_items:
+			vis = e.dst.isVisible()
+			e.setVisible(vis)
+			if vis:
+				e.refresh()
+			else:
+				try:
+					e.label.setVisible(False)
+				except Exception:
+					pass
 
 	# ----- data & layout -----
 	def _try_start_ws(self):
@@ -939,6 +1141,7 @@ class SessionGraph(QWidget):
 				pass
 
 			edge.refresh()  # <-- place label & gap from the very first frame
+			self._apply_filters_to_items()
 
 	# ----- websocket handlers -----------------------------------------------
 	def _on_ws_snapshot(self, payload):
@@ -966,6 +1169,7 @@ class SessionGraph(QWidget):
 			self._upsert_node(node)
 
 		self._rebuild_edges()
+		self._apply_filters_to_items()
 
 		if not self._centered_once:
 			if self.agent_items:
@@ -983,6 +1187,7 @@ class SessionGraph(QWidget):
 		node = self._dict_to_node(s or {})
 		self._upsert_node(node)
 		self._rebuild_edges()
+		self._apply_filters_to_items()
 		self._save_timer.start()
 
 	def _on_ws_remove(self, sid: str):
@@ -992,6 +1197,7 @@ class SessionGraph(QWidget):
 		if it:
 			self.scene.removeItem(it)
 			self._rebuild_edges()
+			self._apply_filters_to_items()
 			self._save_timer.start()
 
 	def _upsert_node(self, node: SessionNode):
@@ -1020,7 +1226,7 @@ class SessionGraph(QWidget):
 
 			# Start radius just outside the C2 icon + a bit
 			c2_half = max(getattr(self.c2, "_rect", QRectF(-30, -30, 60, 60)).width(),
-			              getattr(self.c2, "_rect", QRectF(-30, -30, 60, 60)).height()) * 0.5
+						  getattr(self.c2, "_rect", QRectF(-30, -30, 60, 60)).height()) * 0.5
 			r0 = max(SPAWN_RING_START, c2_half + min_sep * 0.9)
 
 			# Existing agents (positions & scene rects)
@@ -1046,7 +1252,7 @@ class SessionGraph(QWidget):
 				for s in range(slots):
 					ang = angle_offset + (s / float(slots)) * (2.0 * math.pi)
 					cand = QPointF(c2c.x() + math.cos(ang) * r,
-					               c2c.y() + math.sin(ang) * r)
+								   c2c.y() + math.sin(ang) * r)
 
 					# Enforce minimum separation
 					nearest = float("inf")
@@ -1079,7 +1285,7 @@ class SessionGraph(QWidget):
 					if existing_pos:
 						# nearest neighbor y delta (positive means “below”)
 						y_deltas = sorted((cand.y() - p.y() for p in existing_pos),
-						                  key=lambda v: abs(v))
+										  key=lambda v: abs(v))
 						if y_deltas:
 							nudge = (0.02 if y_deltas[0] > 0 else -0.02)
 
@@ -1100,7 +1306,7 @@ class SessionGraph(QWidget):
 			idx = len(self.agent_items)
 			spacing = min_sep * 1.25
 			return QPointF(c2c.x() + (idx % 10) * spacing - 5 * spacing,
-			                c2c.y() + (idx // 10) * (spacing * 0.7))
+							c2c.y() + (idx // 10) * (spacing * 0.7))
 
 		item = self.agent_items.get(node.sid)
 		if item is None:
@@ -1161,3 +1367,166 @@ class SessionGraph(QWidget):
 
 	def _emit_kill_session(self, sid: str, host: str):
 		self.kill_session_requested.emit(sid, host)
+
+	# ---------- Find panel (Ctrl+F) ----------
+	def _build_find_panel(self):
+		self._find_panel = QWidget(self.view)
+		self._find_panel.setObjectName("FindPanel")
+		self._find_panel.setVisible(False)
+		self._find_panel.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+
+		# layout
+		lay = QHBoxLayout(self._find_panel)
+		lay.setContentsMargins(10, 8, 8, 8)
+		lay.setSpacing(8)
+
+		self._field_combo = QComboBox(self._find_panel)
+		self._field_combo.addItem("ID", "sid")
+		self._field_combo.addItem("Hostname", "hostname")
+		self._field_combo.addItem("User", "username")
+		self._field_combo.addItem("OS", "os")
+		self._field_combo.addItem("Transport", "protocol")
+		self._field_combo.setFixedHeight(28)
+		self._field_combo.setMinimumWidth(120)
+
+		self._find_edit = QLineEdit(self._find_panel)
+		self._find_edit.setPlaceholderText("Find…")
+		self._find_edit.setFixedHeight(28)
+		self._find_edit.returnPressed.connect(self._find_next)
+		self._find_edit.textChanged.connect(self._update_search_results)
+
+		# Nav buttons
+		self._btn_prev = QToolButton(self._find_panel)
+		self._btn_prev.setObjectName("FindNav")
+		self._btn_prev.setText("Prev")
+		self._btn_prev.setToolTip("Previous match (Shift+Enter / Shift+F3)")
+		self._btn_prev.setFixedHeight(26)
+		self._btn_prev.clicked.connect(self._find_prev)
+
+		self._btn_next = QToolButton(self._find_panel)
+		self._btn_next.setObjectName("FindNav")
+		self._btn_next.setText("Next")
+		self._btn_next.setToolTip("Next match (Enter / F3)")
+		self._btn_next.setFixedHeight(26)
+		self._btn_next.clicked.connect(self._find_next)
+
+		close_btn = QToolButton(self._find_panel)
+		close_btn.setText("✕")
+		close_btn.setToolTip("Close")
+		close_btn.setFixedSize(22, 22)
+		close_btn.clicked.connect(self._hide_find_panel)
+
+		lay.addWidget(self._field_combo)
+		lay.addWidget(self._find_edit, 1)
+		lay.addWidget(self._btn_prev)
+		lay.addWidget(self._btn_next)
+		lay.addWidget(close_btn)
+
+		# Styling to match the app
+		self._find_panel.setStyleSheet("""
+			QWidget#FindPanel { background:#10151c; border:1px solid #3b404a; border-radius:8px; }
+			QLineEdit { background:#1a1f29; color:#e6e6e6; border:1px solid #3b404a; border-radius:6px; padding:4px 8px; }
+			QLineEdit:focus { border-color:#5a93ff; }
+			QComboBox { background:#1a1f29; color:#e6e6e6; border:1px solid #3b404a; border-radius:6px; padding:2px 6px; }
+			QToolButton#FindNav { background:#222834; color:#e6e6e6; border:1px solid #3b404a; border-radius:6px; padding:2px 10px; }
+			QToolButton#FindNav:hover { background:#2a3140; }
+			QToolButton#FindNav:disabled { color:#9aa3ad; border-color:#333842; background:#1c212b; }
+			QToolButton { background:transparent; color:#cfd6dd; border:none; font-weight:bold; }
+			QToolButton:hover { color:#ffffff; }
+		""")
+
+		# Escape closes the panel
+		QShortcut(QKeySequence(Qt.Key_Escape), self._find_panel, activated=self._hide_find_panel)
+
+		# F3 / Shift+F3; Enter already wired to next; add Shift+Enter
+		QShortcut(QKeySequence(Qt.Key_F3), self._find_panel, activated=self._find_next)
+		QShortcut(QKeySequence("Shift+F3"), self._find_panel, activated=self._find_prev)
+		QShortcut(QKeySequence("Shift+Return"), self._find_panel, activated=self._find_prev)
+
+		# Ask the view to anchor this panel at top-right
+		try:
+			self.view.register_top_right_widget(self._find_panel)
+		except Exception:
+			# Fallback: manual position on resize/show
+			self.view.viewport().installEventFilter(self)
+
+	def _show_find_panel(self):
+		self._find_panel.show()
+		# size to a sensible width (40% of viewport, clamped)
+		vw = self.view.viewport().width()
+		w = max(360, min(520, int(vw * 0.4)))
+		h = 44
+		self._find_panel.resize(w, h)
+		# Ensure it gets placed now
+		try:
+			self.view._reposition_top_right_widgets()
+		except Exception:
+			self._reposition_find_fallback()
+		self._find_edit.setFocus()
+		self._find_edit.selectAll()
+		self._update_search_results()
+
+	def _hide_find_panel(self):
+		self._find_panel.hide()
+		self._search_results = []
+		self._search_index = -1
+
+	def _reposition_find_fallback(self):
+		# Used only if register_top_right_widget wasn't available
+		margin = 12
+		vp = self.view.viewport()
+		x = vp.width() - self._find_panel.width() - margin
+		y = margin
+		self._find_panel.move(x, y)
+
+	def eventFilter(self, obj, ev):
+		# Fallback anchoring if GraphView didn't register our panel
+		if obj is self.view.viewport() and ev.type() in (QEvent.Resize, QEvent.Show, QEvent.LayoutRequest):
+			if self._find_panel.isVisible():
+				self._reposition_find_fallback()
+		return super().eventFilter(obj, ev)
+
+	def _update_search_results(self):
+		text = (self._find_edit.text() or "").strip().lower()
+		key = self._field_combo.currentData() or "sid"
+		self._search_results = []
+		self._search_index = -1
+		if not text:
+			# disable nav when query empty
+			if hasattr(self, "_btn_prev"): self._btn_prev.setEnabled(False)
+			if hasattr(self, "_btn_next"): self._btn_next.setEnabled(False)
+			return
+		# Search only visible nodes so results are meaningful
+		for it in self.agent_items.values():
+			if not it.isVisible():
+				continue
+			val = getattr(it.node, key, "")
+			if text in str(val).lower():
+				self._search_results.append(it)
+
+		has = bool(self._search_results)
+		if hasattr(self, "_btn_prev"): self._btn_prev.setEnabled(has)
+		if hasattr(self, "_btn_next"): self._btn_next.setEnabled(has)
+
+	def _find_next(self):
+		if not self._search_results:
+			QApplication.beep()
+			return
+		self._search_index = (self._search_index + 1) % len(self._search_results)
+		it = self._search_results[self._search_index]
+		# smooth fly to the node
+		try:
+			self.view._fly_to(it.scenePos(), max(DBLCLICK_BASE_TARGET_ZOOM, 2.4))
+		except Exception:
+			self.view.centerOn(it)
+
+	def _find_prev(self):
+		if not self._search_results:
+			QApplication.beep()
+			return
+		self._search_index = (self._search_index - 1) % len(self._search_results)
+		it = self._search_results[self._search_index]
+		try:
+			self.view._fly_to(it.scenePos(), max(DBLCLICK_BASE_TARGET_ZOOM, 2.4))
+		except Exception:
+			self.view.centerOn(it)

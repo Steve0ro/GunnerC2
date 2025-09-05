@@ -251,6 +251,23 @@ class HistoryLineEdit(QLineEdit):
         else:
             self._cycle_state = None
 
+        # ---- Readline shortcuts ----
+        if (e.modifiers() & Qt.ControlModifier) and e.key() == Qt.Key_A:
+            # Move cursor to the start of the line (no selection)
+            self.setCursorPosition(0)
+            e.accept()
+            return
+
+        if (e.modifiers() & Qt.ControlModifier) and e.key() == Qt.Key_K:
+            # Kill from cursor to end of line (like bash/zsh)
+            s = self.text()
+            cp = self.cursorPosition()
+            if cp <= len(s):
+                self.setText(s[:cp])
+                self.setCursorPosition(cp)
+            e.accept()
+            return
+
         if e.key() == Qt.Key_Up:
             if self._hist and self._idx > 0:
                 if self._idx == len(self._hist):

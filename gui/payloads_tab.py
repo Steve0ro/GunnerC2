@@ -1,9 +1,10 @@
-from PyQt5.QtCore import Qt, QPropertyAnimation, QSequentialAnimationGroup, QEasingCurve
-from PyQt5.QtGui import QFont, QPalette, QColor, QTextOption
+from PyQt5.QtCore import Qt, QPropertyAnimation, QSequentialAnimationGroup, QEasingCurve, QEvent
+from PyQt5.QtGui import QFont, QPalette, QColor, QTextOption, QIntValidator
 from PyQt5.QtWidgets import (
     QWidget, QLabel, QLineEdit, QComboBox, QPushButton, QHBoxLayout, QVBoxLayout,
     QTextEdit, QMessageBox, QFormLayout, QGroupBox, QSpinBox, QCheckBox,
-    QSplitter, QFileDialog, QPlainTextEdit, QSizePolicy, QGraphicsOpacityEffect
+    QSplitter, QFileDialog, QPlainTextEdit, QSizePolicy, QGraphicsOpacityEffect,
+    QScrollArea, QFrame, QLayout, QScroller, QScrollerProperties
 )
 
 
@@ -28,8 +29,9 @@ class PayloadsTab(QWidget):
     # ---------- UI ----------
     def _build_ui(self):
         # --- Left: Config ---------------------------------------------------
-        left = QWidget()
-        lyt = QVBoxLayout(left); lyt.setContentsMargins(10, 10, 10, 10); lyt.setSpacing(10)
+        # Put the entire left stack inside a scroll area so nothing gets crunched
+        left_content = QWidget()
+        lyt = QVBoxLayout(left_content); lyt.setContentsMargins(10, 10, 10, 10); lyt.setSpacing(10)
 
         # Primary group
         grp_core = QGroupBox("Payload")
@@ -53,14 +55,23 @@ class PayloadsTab(QWidget):
         tform.addRow("Host/IP:", self.host)
         tform.addRow("Port:", self.port)
 
-        # HTTP-ish options (visible for http/https)
+        # HTTP/HTTPS options (visible only when transport is http/https)
         grp_http = QGroupBox("HTTP Options")
-        hform = QFormLayout(grp_http); hform.setLabelAlignment(Qt.AlignRight)
+        # Prevent shrink-below-content, but still allow width expansion
+        grp_http.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        hform = QFormLayout(grp_http)
+        hform.setLabelAlignment(Qt.AlignRight)
+        hform.setRowWrapPolicy(QFormLayout.DontWrapRows)
+        hform.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        hform.setFormAlignment(Qt.AlignTop)
+        hform.setSizeConstraint(QLayout.SetMinimumSize)  # <- honor sizeHint vertically
+
         self.beacon = QSpinBox(); self.beacon.setRange(1, 86400); self.beacon.setValue(5)
         self.jitter = QSpinBox(); self.jitter.setRange(0, 90); self.jitter.setValue(0)
         self.useragent = QLineEdit(); self.useragent.setPlaceholderText("User-Agent (optional)")
         self.accept = QLineEdit(); self.accept.setPlaceholderText("Accept header (optional)")
         self.byte_range = QLineEdit(); self.byte_range.setPlaceholderText("Range header (optional)")
+        self.byte_range.setValidator(QIntValidator(0, 2_147_483_647, self))  # numeric only
         # Profile: full path to a *.profile file (picker)
         self.profile = QLineEdit(); self.profile.setPlaceholderText("Select .profile file (optional)")
         self.btn_profile = QPushButton("Browse…")
@@ -74,8 +85,19 @@ class PayloadsTab(QWidget):
         _prof_row = QWidget(); _prof_lyt = QHBoxLayout(_prof_row); _prof_lyt.setContentsMargins(0,0,0,0); _prof_lyt.setSpacing(6)
         _prof_lyt.addWidget(self.profile, 1); _prof_lyt.addWidget(self.btn_profile, 0)
 
-        self.headers = QTextEdit(); self.headers.setFixedHeight(60)
-        self.headers.setPlaceholderText("Extra headers (one per line)\nExample: X-Op: RedTeam\n          X-Id: 123")
+        # Plain text editor behaves better in forms than rich-text QTextEdit
+        self.headers = QPlainTextEdit(); self.headers.setFixedHeight(72)
+        self.headers.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.headers.setPlaceholderText("Extra headers (one per line)\nExample: X-Op: RedTeam\nX-Id: 123")
+
+        # Force white placeholder + readable text for the headers box
+        hdr_pal = self.headers.palette()
+        hdr_pal.setColor(QPalette.PlaceholderText, QColor("#ffffff"))   # <- white placeholder
+        hdr_pal.setColor(QPalette.Text, QColor("#e6e6e6"))              # <- entered text
+        self.headers.setPalette(hdr_pal)
+        # QAbstractScrollArea paints via its viewport; set it too for stubborn themes
+        self.headers.viewport().setPalette(hdr_pal)
+
         hform.addRow("Beacon (s):", self.beacon)
         hform.addRow("Jitter (%):", self.jitter)
         hform.addRow("User-Agent:", self.useragent)
@@ -101,6 +123,22 @@ class PayloadsTab(QWidget):
         self._lbl_stager_ip  = aform.labelForField(self.stager_ip)
         self._lbl_stager_prt = aform.labelForField(self.stager_port)
 
+        # Output (optional, like CLI -o/--output for TEXT formats)
+        grp_out = QGroupBox("Output")
+        oform = QFormLayout(grp_out); oform.setLabelAlignment(Qt.AlignRight)
+        self.output_path = QLineEdit(); self.output_path.setPlaceholderText("Write text payload to file (optional)")
+        self.btn_output = QPushButton("Browse…")
+        self.btn_output.setCursor(Qt.PointingHandCursor)
+        self.btn_output.setFixedHeight(28)
+        self.btn_output.setStyleSheet(
+            "QPushButton { background:#23272e; color:#e6e6e6; border:1px solid #3b404a;"
+            "  border-radius:6px; padding:2px 10px; }"
+            "QPushButton:hover { border-color:#5a6270; }"
+        )
+        _out_row = QWidget(); _out_lyt = QHBoxLayout(_out_row); _out_lyt.setContentsMargins(0,0,0,0); _out_lyt.setSpacing(6)
+        _out_lyt.addWidget(self.output_path, 1); _out_lyt.addWidget(self.btn_output, 0)
+        oform.addRow("File:", _out_row)
+
         # Generate button row
         self.btn_generate = QPushButton("Generate")
         self.btn_generate.setCursor(Qt.PointingHandCursor)
@@ -116,16 +154,18 @@ class PayloadsTab(QWidget):
             self.host, self.port,
             self.beacon, self.jitter,
             self.useragent, self.accept, self.byte_range,
-            self.profile, self.obs, self.stager_ip, self.stager_port
+            self.profile, self.obs, self.stager_ip, self.stager_port,
+            _prof_row, _out_row
         )
 
         # Left column itself prefers expanding vertically but respects minimums
-        left.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
+        left_content.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
 
         lyt.addWidget(grp_core)
         lyt.addWidget(grp_target)
         lyt.addWidget(grp_http)
         lyt.addWidget(grp_adv)
+        lyt.addWidget(grp_out)
         lyt.addWidget(self.btn_generate)
         lyt.addStretch()
 
@@ -133,7 +173,7 @@ class PayloadsTab(QWidget):
         pal = self.host.palette()
         pal.setColor(QPalette.PlaceholderText, QColor("#dfe6ee"))
         for w in (self.host, self.port, self.useragent, self.accept, self.byte_range, self.profile,
-                  self.stager_ip, self.stager_port):
+                  self.stager_ip, self.stager_port, self.output_path):
             w.setPalette(pal)
 
         # --- Right: Output --------------------------------------------------
@@ -193,9 +233,18 @@ class PayloadsTab(QWidget):
         rlyt.addLayout(actions)
         rlyt.addWidget(self.out, stretch=1)
 
+       
+        # Make the left column scroll if it can't fit vertically
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setWidget(left_content)
+        self._init_smooth_scroll(left_scroll)  # Make the scrollbar feel silky
+
         # --- Splitter -------------------------------------------------------
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(left)
+        split.addWidget(left_scroll)
         split.addWidget(right)
         split.setOpaqueResize(True)        # live-resize, no rubber band
         split.setChildrenCollapsible(False)
@@ -213,6 +262,9 @@ class PayloadsTab(QWidget):
         # Save refs for visibility toggles
         self._grp_http = grp_http
         self._grp_adv = grp_adv
+        self._grp_out = grp_out
+        self._left_scroll = left_scroll  # Keep a handle so the eventFilter can find it
+        self._apply_placeholder_color_all("#ffffff")
 
     def _show_copied_toast(self):
         lbl = self._copied_label
@@ -259,6 +311,135 @@ class PayloadsTab(QWidget):
         self._copied_anim = group
         group.start()
 
+    # ---------- smooth scrolling setup ----------
+    def _init_smooth_scroll(self, area):
+        """
+        Smooth, pixel-precise scrolling with:
+            • animated wheel steps (no overshoot)
+            • kinetic drag/flick (overshoot hard-disabled)
+            • slim overlay-style scrollbar
+        """
+        # --- wheel animation (no bounce) ---
+        self._smooth_anim = QPropertyAnimation(area.verticalScrollBar(), b"value", self)
+        self._smooth_anim.setDuration(160)
+        self._smooth_anim.setEasingCurve(QEasingCurve.OutCubic)
+        area.verticalScrollBar().setSingleStep(18)  # small 'tick' but animated
+
+        # --- kinetic scrolling via QScroller, overshoot OFF everywhere ---
+        vp = area.viewport()
+        vp.setAttribute(Qt.WA_AcceptTouchEvents, True)
+
+        # Enable both mouse-drag and touch flicking
+        QScroller.grabGesture(vp, QScroller.LeftMouseButtonGesture)
+        QScroller.grabGesture(vp, QScroller.TouchGesture)
+
+        scroller = QScroller.scroller(vp)
+
+        # Version-safe enum handles (PyQt5 can expose these in slightly different places)
+        SM = getattr(QScrollerProperties, "ScrollMetric", QScrollerProperties)
+        OP = getattr(QScrollerProperties, "OvershootPolicy", None)
+
+        props = scroller.scrollerProperties()
+        props.setScrollMetric(SM.DecelerationFactor, 0.08)
+        props.setScrollMetric(SM.MaximumVelocity, 0.75)
+        props.setScrollMetric(SM.DragStartDistance, 0.002)
+        props.setScrollMetric(SM.DragVelocitySmoothingFactor, 0.12)
+
+        # Kill the spring effect completely (this is the key)
+        props.setScrollMetric(SM.OvershootDragResistanceFactor, 0.0)
+        props.setScrollMetric(SM.OvershootScrollDistanceFactor, 0.0)
+
+        # Set the overshoot policy metric → AlwaysOff (robust across PyQt builds)
+        metric_key = getattr(SM, "OvershootPolicy", int(getattr(SM, "OvershootPolicy", 6)))
+        if OP and hasattr(OP, "OvershootAlwaysOff"):
+            policy_off = getattr(OP, "OvershootAlwaysOff")
+        else:
+            policy_off = getattr(QScrollerProperties, "OvershootAlwaysOff", 1)
+        props.setScrollMetric(metric_key, int(policy_off))
+
+        scroller.setScrollerProperties(props)
+
+        # If kinetic scroll ever tries to leave bounds, snap it back immediately
+        def _enforce_edges(_state):
+            if _state in (QScroller.Inactive, QScroller.Scrolling):
+                sb = area.verticalScrollBar()
+                if sb.value() < sb.minimum():
+                    sb.setValue(sb.minimum())
+                elif sb.value() > sb.maximum():
+                    sb.setValue(sb.maximum())
+        scroller.stateChanged.connect(_enforce_edges)
+
+        # --- overlay scrollbar look ---
+        area.setStyleSheet("""
+            QScrollArea { background: transparent; }
+            QAbstractScrollArea { background: transparent; }
+            QScrollBar:vertical {
+                background: transparent;
+                width: 10px;
+                margin: 4px 2px 4px 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #4a5160;
+                border-radius: 5px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover { background: #5b6476; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+        """)
+
+        # Intercept wheel events for pixel-precise, clamped animation
+        vp.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        # Animate only the left scroller we wired up
+        if getattr(self, "_left_scroll", None) and obj is self._left_scroll.viewport() and ev.type() == QEvent.Wheel:
+            sb = self._left_scroll.verticalScrollBar()
+
+            # Prefer pixelDelta (trackpads); fall back to angleDelta (traditional wheel)
+            dy = ev.pixelDelta().y() if not ev.pixelDelta().isNull() else ev.angleDelta().y() / 8.0
+            if dy:
+                start = sb.value()
+                target = int(max(sb.minimum(), min(sb.maximum(), start - dy)))
+
+                # If we’re landing exactly at an edge, shorten the animation so it
+                # feels crisp (and cannot ‘spring’ back).
+                self._smooth_anim.stop()
+                self._smooth_anim.setTargetObject(sb)
+                self._smooth_anim.setStartValue(start)
+                self._smooth_anim.setEndValue(target)
+                self._smooth_anim.setDuration(110 if target in (sb.minimum(), sb.maximum()) else 160)
+                self._smooth_anim.start()
+
+                ev.accept()
+                return True
+        return super().eventFilter(obj, ev)
+
+    def _apply_placeholder_color_all(self, hex_color: str = "#ffffff"):
+        """Force placeholder text to a specific color for all inputs."""
+        color = QColor(hex_color)
+
+        def paint_placeholder(w):
+            pal = w.palette()
+            pal.setColor(QPalette.PlaceholderText, color)
+            w.setPalette(pal)
+            # QTextEdit/QPlainTextEdit draw on a viewport; set it too
+            vp = getattr(w, "viewport", None)
+            if callable(vp):
+                vp().setPalette(pal)
+
+        # Add every widget that uses placeholder text
+        inputs = [
+            self.host, self.port,
+            self.useragent, self.accept, self.byte_range, self.profile,
+            self.stager_ip, self.stager_port, self.output_path,
+            self.headers,                      # QPlainTextEdit
+        ]
+
+        for w in inputs:
+            paint_placeholder(w)
+
+
     # ---------- logic wiring / initial population ----------
     def _wire_init(self):
         # wire
@@ -270,6 +451,7 @@ class PayloadsTab(QWidget):
         self.btn_save.clicked.connect(self._save)
         self.btn_clear.clicked.connect(lambda: self.out.clear())
         self.btn_profile.clicked.connect(self._choose_profile)
+        self.btn_output.clicked.connect(self._choose_output_file)
         # initial population based on current platform
         self._on_platform_changed()
 
@@ -336,6 +518,13 @@ class PayloadsTab(QWidget):
         t = self.transport.currentText().lower()
         httpy = t in ("http", "https")
         self._grp_http.setVisible(httpy)
+        # Title + enable/disable relevant inputs together
+        if httpy:
+            self._grp_http.setTitle("HTTPS Options" if t == "https" else "HTTP Options")
+        for w in (self.beacon, self.jitter, self.useragent, self.accept, self.byte_range,
+                  self.profile, self.btn_profile, self.headers):
+            w.setEnabled(httpy)
+
         # PS1 no_child only affects PS1
         self.no_child.setVisible(self.platform.currentText() == "Windows" and self.format.currentText() == "ps1")
         self._toggle_format_specific_fields()
@@ -388,6 +577,14 @@ class PayloadsTab(QWidget):
         if path:
             self.profile.setText(path)
 
+    def _choose_output_file(self):
+        """Pick a local path to write text payloads (ps1/bash)."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Select Output File", "payload.txt", "All Files (*);;Text (*.txt)"
+        )
+        if path:
+            self.output_path.setText(path)
+
     # ---------- actions ----------
     def _generate(self):
         plat = self.platform.currentText()
@@ -433,6 +630,13 @@ class PayloadsTab(QWidget):
                 if fmt == "gunnerplant" and t != "https":
                     QMessageBox.warning(self, "Payload", "Gunnerplant requires HTTPS transport")
                     return
+                
+                # For EXE/GunnerPlant, give immediate visual feedback in the right pane
+                if fmt in ("exe", "gunnerplant"):
+                    if fmt == "exe":
+                        self.out.setPlainText("Building exe payload …")
+                    else:
+                        self.out.setPlainText("Building GunnerPlant payload …")
                 txt = self.api.generate_windows_payload(cfg)
 
             else:
@@ -446,7 +650,32 @@ class PayloadsTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Generate", str(e)); return
 
-        self.out.setPlainText(txt or "")
+        # If an EXE/GunnerPlant build, backend returns the built path. Display a friendly line.
+        if plat == "Windows" and fmt in ("exe", "gunnerplant"):
+            built = (txt or f"{fmt}").strip()
+            if built:
+                self.out.setPlainText(f"Successfully built {built}")
+            else:
+                self.out.setPlainText(txt or "")
+            return
+
+        if fmt not in ("exe", "gunnerplant"):
+            # Text formats (ps1/bash): optionally auto-write like CLI -o/--output
+            out_path = (self.output_path.text() or "").strip()
+            if out_path:
+                try:
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write(txt or "")
+                    # Prepend a small confirmation, then the payload body
+                    self.out.setPlainText(f"[+] Payload written to {out_path}\n\n{txt or ''}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Output", f"Failed to write {out_path}:\n{e}")
+                    self.out.setPlainText(txt or "")
+            else:
+                self.out.setPlainText(txt or "")
+
+        else:
+            return
 
     def _copy(self):
         txt = self.out.toPlainText()

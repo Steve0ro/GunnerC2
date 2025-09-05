@@ -23,6 +23,7 @@ def _serialize_listener(inst) -> ListenerOut:
             if getattr(inst, "thread", None) and getattr(inst.thread, "is_alive", lambda: False)()
             else "STARTED",
         "profile": getattr(inst, "profiles", None) or None,
+        "name": getattr(inst, "name", None),
     }
 
 @router.get("", response_model=list[ListenerOut])
@@ -34,6 +35,14 @@ def start_listener(req: NewListenerRequest):
     t = (req.type or "").lower().strip()
     if t not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported listener type '{t}'")
+
+    if not req.name:
+        raise HTTPException(status_code=400, detail=f"Listener name must be provided!")
+
+    # Optional friendly name: reject duplicates if provided
+    friendly = (req.name or "").strip()
+    if friendly and any(getattr(x, "name", "") == friendly for x in _RUNNING.values()):
+        raise HTTPException(status_code=400, detail=f"Listener name '{friendly}' already in use")
 
     kwargs = {"profiles": req.profile}
     if t in ("https", "tls"):  # optional TLS bits
@@ -51,6 +60,12 @@ def start_listener(req: NewListenerRequest):
     lid = getattr(inst, "id", "") or ""
     if not lid:
         raise HTTPException(status_code=500, detail="Listener missing ID")
+
+    # Attach the friendly name (fall back to transport:port)
+    try:
+        inst.name = friendly or f"{t}:{req.port}"
+    except Exception:
+        pass
 
     _RUNNING[lid] = inst
     return _serialize_listener(inst)

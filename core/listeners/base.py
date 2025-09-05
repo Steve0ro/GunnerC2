@@ -18,6 +18,7 @@ class Listener(ABC):
 	def __init__(self, ip: str, port: int, transport: str, to_console: bool=True, op_id: str=None, listener_id: str=None, profiles: Optional[str] = None):
 		self.ip = ip
 		self.port = port
+		self.name = ""
 		self.transport = transport
 		self.to_console = to_console
 		self.op_id = op_id

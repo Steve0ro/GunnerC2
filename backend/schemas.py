@@ -32,6 +32,7 @@ class NewListenerRequest(BaseModel):
     profile: str | None = None
     certfile: str | None = None
     keyfile: str | None = None
+    name: str | None = None
 
 
 class ListenerOut(BaseModel):
@@ -41,6 +42,7 @@ class ListenerOut(BaseModel):
     port: int
     status: str
     profile: str | None = None
+    name: str | None = None
 
 class SessionSummary(BaseModel):
     id: str

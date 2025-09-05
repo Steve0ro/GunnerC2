@@ -14,6 +14,7 @@ except Exception:
 # -------------------- Columns --------------------
 COLUMNS = [
     ("ID", "id"),
+    ("Name", "name"),
     ("Type", "type"),
     ("IP", "bind_ip"),
     ("Port", "port"),
@@ -165,7 +166,7 @@ class ListenersTab(QWidget):
 
         # --- Toolbar: search (left), actions (right)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search listeners (ID, type, IP, port, status)…")
+        self.search.setPlaceholderText("Search listeners (ID, name, type, IP, port, status)…")
         self.search.setClearButtonEnabled(True)
 
         self.btn_new  = QPushButton("New Listener…")
@@ -191,7 +192,7 @@ class ListenersTab(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSortingEnabled(True)
-        self.table.sortByColumn(3, Qt.AscendingOrder)  # by Port initially
+        self.table.sortByColumn(4, Qt.AscendingOrder)  # by Port initially
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
         self.table.setTextElideMode(Qt.ElideRight)
@@ -207,15 +208,16 @@ class ListenersTab(QWidget):
 
         # column widths
         self.table.setColumnWidth(0, 160)  # ID
-        self.table.setColumnWidth(1, 100)  # Type
-        self.table.setColumnWidth(2, 160)  # IP
-        self.table.setColumnWidth(3, 90)   # Port
-        self.table.setColumnWidth(4, 120)  # Status
-        self.table.setColumnWidth(5, 180)  # Profile
+        self.table.setColumnWidth(1, 180)  # Name
+        self.table.setColumnWidth(2, 100)  # Type
+        self.table.setColumnWidth(3, 160)  # IP
+        self.table.setColumnWidth(4, 90)   # Port
+        self.table.setColumnWidth(5, 120)  # Status
+        self.table.setColumnWidth(6, 180)  # Profile
 
         # Delegates for pills
-        self.table.setItemDelegateForColumn(1, TypeDelegate(self.table))
-        self.table.setItemDelegateForColumn(4, StatusDelegate(self.table))
+        self.table.setItemDelegateForColumn(2, TypeDelegate(self.table))
+        self.table.setItemDelegateForColumn(5, StatusDelegate(self.table))
 
         # Context menu
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -285,7 +287,8 @@ class ListenersTab(QWidget):
         norm = []
         for r in rows:
             norm.append({
-                "id":       r.get("id") or r.get("name") or "",
+                "id":       r.get("id") or "",
+                "name":     r.get("name") or "",
                 "type":     (r.get("type") or r.get("transport") or "").lower(),
                 "bind_ip":  r.get("bind_ip") or r.get("ip") or "0.0.0.0",
                 "port":     r.get("port") or r.get("bind_port") or 0,
@@ -308,17 +311,28 @@ class ListenersTab(QWidget):
 
     # ----- Context menu -----
     def _context_menu(self, pos):
+        # Select the row under the mouse (matches Sessions tab behavior)
+        idx = self.table.indexAt(pos)
+        if idx.isValid():
+            self.table.selectRow(idx.row())
         row = self._current_row()
+
         m = QMenu(self)
-        a1 = m.addAction("Stop", self.stop_listener)
+        if not row:
+            # Empty area: show only global actions (like Sessions)
+            m.addAction("Refresh", self.reload)
+            m.addAction("New Listener…", self.open_create_dialog)
+            m.exec_(self.table.viewport().mapToGlobal(pos))
+            return
+
+        stop_act   = m.addAction("Stop", self.stop_listener)
         m.addSeparator()
-        a2 = m.addAction("Copy ID", lambda: self._copy_field("id"))
-        a3 = m.addAction("Copy IP:Port", self._copy_ip_port)
-        a4 = m.addAction("Copy Row (TSV)", self._copy_row_tsv)
-        if not row: 
-            for a in (a1, a2, a3, a4): a.setEnabled(False)
-        else:
-            a1.setEnabled((row.get("status") or "").upper() == "STARTED")
+        copy_id    = m.addAction("Copy ID",   lambda: self._copy_field("id"))
+        copy_name  = m.addAction("Copy Name", lambda: self._copy_field("name"))
+        copy_ip    = m.addAction("Copy IP:Port", self._copy_ip_port)
+        copy_row   = m.addAction("Copy Row (TSV)", self._copy_row_tsv)
+        
+        stop_act.setEnabled((row.get("status") or "").upper() == "STARTED")
         m.exec_(self.table.viewport().mapToGlobal(pos))
 
     def _copy_field(self, key):
@@ -329,7 +343,6 @@ class ListenersTab(QWidget):
     def _copy_ip_port(self):
         row = self._current_row()
         if not row: return
-        QApplication.clipboard().setText(f"{row.get('bind_ip','')}",)
         QApplication.clipboard().setText(f"{row.get('bind_ip','')}:{row.get('port','')}")
 
     def _copy_row_tsv(self):
@@ -353,7 +366,7 @@ class ListenersTab(QWidget):
                 ip = cfg.get("host", "0.0.0.0")
                 port = int(cfg.get("port", 0))
                 profile = cfg.get("base_path") if t in ("http", "https") else None
-                self.api.create_listener(t, ip, port, profile)
+                self.api.create_listener(t, ip, port, profile, cfg.get("name"))
         except Exception as e:
             QMessageBox.critical(self, "Create Listener", str(e))
             return
@@ -363,7 +376,25 @@ class ListenersTab(QWidget):
         row = self._current_row()
         if not row:
             return
+
+        # Friendly name for confirmation (falls back sensibly)
+        friendly = (
+            row.get("name")
+            or row.get("id")
+            or f"{row.get('type','')}:{row.get('port','')}"
+        )
+        resp = QMessageBox.question(
+            self,
+            "Stop Listener?",
+            f"Hey, are you sure you'd like to stop listener \"{friendly}\"?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if resp != QMessageBox.Yes:
+            return
+
         lid = row.get("id")
+
         try:
             self.api.stop_listener(lid)
         except Exception as e:

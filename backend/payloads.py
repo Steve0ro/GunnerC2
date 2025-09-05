@@ -2,6 +2,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Optional
+from colorama import Fore, Style
+
+brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
+brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
+brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
+reset = Style.RESET_ALL
 
 router = APIRouter()
 
@@ -83,6 +90,12 @@ def build_windows(cfg: WindowsPayload) -> str:
     t = cfg.transport.lower()
     f = cfg.format.lower()
     ip, port = cfg.host, cfg.port
+
+    # Informative build banner for heavy formats
+    if f == "exe":
+        print(brightgreen + "[+] Building exe payload" + reset)
+    elif f == "gunnerplant":
+        print(brightgreen + "[+] Building GunnerPlant payload" + reset)
 
     # Guard: Gunnerplant is HTTPS-only
     if f == "gunnerplant" and t != "https":

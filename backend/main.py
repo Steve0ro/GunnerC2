@@ -20,6 +20,7 @@ from .files import router as files_router
 from .payloads import router as payloads_router
 from .websocket_console import router as ws_router
 from .websocket_gunnershell import router as gs_router
+from .websocket_files import router as files_ws_router
 
 app = FastAPI(title="GunnerC2 Integrated API", version="1.0")
 
@@ -45,7 +46,7 @@ app.include_router(operators_ws_router)
 app.include_router(listeners_router, prefix="/listeners", tags=["listeners"])
 #app.include_router(sessions_router, prefix="/sessions", tags=["sessions"])
 app.include_router(sessions_ws_router)
-app.include_router(files_router, prefix="/files", tags=["files"])
+app.include_router(files_ws_router)
 app.include_router(payloads_router, prefix="/payloads", tags=["payloads"])
 app.include_router(ws_router, tags=["websocket"])
 app.include_router(gs_router, tags=["websocket"])

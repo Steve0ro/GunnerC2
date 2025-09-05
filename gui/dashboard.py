@@ -1,22 +1,29 @@
 # gui/dashboard.py
-from PyQt5.QtCore import Qt, QSettings, QByteArray, QTimer
+from PyQt5.QtCore import Qt, QSettings, QByteArray, QTimer, QPoint, QRect, QEvent
+
 from PyQt5.QtWidgets import (
-	QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTabWidget, QSplitter, QMessageBox, QApplication, QSizePolicy
+	QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTabWidget, QSplitter, QMessageBox, QApplication, QSizePolicy,
+	QMenu, QAction
 )
+
+from PyQt5.QtGui import QFont
 
 from session_graph import SessionGraph
 from sessions_tab import SessionsTab
 from listeners_tab import ListenersTab
 from payloads_tab import PayloadsTab
 from operators_tab import OperatorsTab
+from file_browser import FileBrowser
 from session_console import SessionConsole
 from gunnershell_console import GunnershellConsole
 
 try:
 	# same import pattern you used elsewhere
 	from .websocket_client import SessionsWSClient
+	from .file_browser import FileBrowser
 except Exception:
 	from websocket_client import SessionsWSClient
+	from file_browser import FileBrowser
 
 # ----------- Helpers ------------
 def _strip_host_prefix(username: str, hostname: str) -> str:
@@ -44,19 +51,21 @@ class Dashboard(QWidget):
 		self.api = api
 
 		# ---------- Top button bar ----------
-		self.btn_graph = QPushButton("Graph")
 		self.btn_sessions = QPushButton("Sessions")
 		self.btn_listeners = QPushButton("Listeners")
 		self.btn_payloads = QPushButton("Payloads")
 		self.btn_operators = QPushButton("Operators")
 
-		for b in (self.btn_graph, self.btn_sessions, self.btn_listeners, self.btn_payloads, self.btn_operators):
+		for b in (self.btn_sessions, self.btn_listeners, self.btn_payloads, self.btn_operators):
 			b.setCursor(Qt.PointingHandCursor)
 			b.setMinimumHeight(34)
 			b.setStyleSheet(
 				"QPushButton {"
-				"  background:#2c313a; color:#e6e6e6; border:1px solid #3b404a;"
-				"  border-radius:6px; padding:6px 12px; font-weight:600; }"
+				"  background:#2c313a; color:#e9eaec; border:1px solid #3b404a;"
+				"  border-radius:6px; padding:6px 14px;"
+				"  font-family:'Segoe UI';"        
+				"  font-size:13px; font-weight:600;" 
+				"}"
 				"QPushButton:hover { border-color:#5a6270; }"
 				"QPushButton:pressed { background:#23272e; }"
 			)
@@ -64,7 +73,6 @@ class Dashboard(QWidget):
 		buttons = QHBoxLayout()
 		buttons.setContentsMargins(8, 8, 8, 4)
 		buttons.setSpacing(8)
-		buttons.addWidget(self.btn_graph)
 		buttons.addWidget(self.btn_sessions)
 		buttons.addWidget(self.btn_listeners)
 		buttons.addWidget(self.btn_payloads)
@@ -88,6 +96,14 @@ class Dashboard(QWidget):
 		self.tabs.setTabsClosable(True)
 		self.tabs.setMovable(True)
 		self.tabs.tabCloseRequested.connect(self._close_tab)
+
+		# --- Per-tab metadata (for console/GS tabs only) ---
+		self._tab_meta = {}  # widget -> {"kind": "console"|"gunnershell", "sid":..., "hostname":..., "username":..., "arch":...}
+
+		# --- Right-click menu on the tab bar ---
+		bar = self.tabs.tabBar()
+		bar.setContextMenuPolicy(Qt.CustomContextMenu)
+		bar.customContextMenuRequested.connect(self._on_tabbar_menu)
 
 		# Use a vertical splitter so users can resize graph vs. tabs freely
 		self.split = QSplitter(Qt.Vertical)
@@ -168,7 +184,6 @@ class Dashboard(QWidget):
 		root.addWidget(self.split)
 
 		# ---------- Button wiring ----------
-		self.btn_graph.clicked.connect(self._focus_graph)
 		self.btn_sessions.clicked.connect(self._open_sessions_tab)
 		self.btn_listeners.clicked.connect(self._open_listeners_tab)
 		self.btn_payloads.clicked.connect(self._open_payloads_tab)
@@ -180,8 +195,53 @@ class Dashboard(QWidget):
 		self._tab_payloads = None
 		self._tab_operators = None
 
+		# watch geometry changes to keep overlay visibility correct
+		self.installEventFilter(self)
+		self.split.installEventFilter(self)
+		self.tabs.installEventFilter(self)
+		self.tabs.tabBar().installEventFilter(self)
+		self.graph.view.installEventFilter(self)
+		self.graph.view.viewport().installEventFilter(self)
+
+		# first run after layout settles
+		QTimer.singleShot(0, self._update_zoom_overlay_visibility)
+		self.split.splitterMoved.connect(lambda *_: (self._split_save_timer.start(), self._update_zoom_overlay_visibility()))
+
 		# Open Sessions by default in the bottom browser to mirror classic UX
 		self._open_sessions_tab()
+
+	def _update_zoom_overlay_visibility(self):
+		"""Hide zoom overlay if the tab bar (or its near area) is close to it."""
+		try:
+			view = self.graph.view
+			if not hasattr(view, "zoom_overlay_rect_global"):
+				return
+			ov_rect = view.zoom_overlay_rect_global()
+			if ov_rect.isNull():
+				return
+
+			# rectangles to test: the tab BAR and the full tabs widget (for safety)
+			bar  = self.tabs.tabBar()
+			tabs = self.tabs
+			bar_rect  = QRect(bar.mapToGlobal(QPoint(0, 0)),  bar.size())
+			tabs_rect = QRect(tabs.mapToGlobal(QPoint(0, 0)), tabs.size())
+
+			# treat “nearby” as overlap using an inflated margin
+			MARGIN = 28  # <- tune here (px)
+			r_overlay = ov_rect.adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN)
+			r_bar     = bar_rect.adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN)
+			r_tabs    = tabs_rect.adjusted(-MARGIN, -MARGIN, MARGIN, MARGIN)
+
+			overlap = r_overlay.intersects(r_bar) or r_overlay.intersects(r_tabs)
+			if hasattr(view, "set_zoom_overlay_visible"):
+				view.set_zoom_overlay_visible(not overlap)
+		except Exception:
+			pass
+
+	def eventFilter(self, obj, ev):
+		if ev.type() in (QEvent.Resize, QEvent.Move, QEvent.Show, QEvent.Hide, QEvent.LayoutRequest):
+			self._update_zoom_overlay_visibility()
+		return super().eventFilter(obj, ev)
 
 	def _toggle_handle_appearance(self, hidden: bool):
 		"""Hide/show the splitter grip dots and handle width."""
@@ -275,6 +335,147 @@ class Dashboard(QWidget):
 				QTimer.singleShot(0, lambda: setattr(self, "_suspend_split_save", False))
 
 			self._set_splitter_locked(False)
+		self._update_zoom_overlay_visibility()
+
+	def _lookup_from_cache(self, sid: str) -> dict:
+		"""Return the best-effort cached session dict (merged with metadata)."""
+		ws = getattr(self, "sessions_ws", None)
+		sess = ws.get_cached(sid) if ws else {}  # may be {}
+		meta = (sess.get("metadata") or {})
+		# flatten a bit so callers can do .get(...) consistently
+		merged = {}
+		merged.update(sess or {})
+		merged.update(meta or {})
+		return merged
+
+	def _set_tab_meta(self, w: QWidget, kind: str, sid: str, hostname: str, username: str = "", arch: str = ""):
+		self._tab_meta[w] = {
+			"kind": kind, "sid": sid, "hostname": hostname,
+			"username": username or "", "arch": arch or ""
+		}
+
+	def _update_tab_meta_username(self, w: QWidget, username: str):
+		m = self._tab_meta.get(w)
+		if m is not None:
+			m["username"] = username or ""
+
+	def _update_tab_meta_arch(self, w: QWidget, arch: str):
+		m = self._tab_meta.get(w)
+		if m is not None and arch:
+			m["arch"] = arch
+
+	def _unique_tab_title(self, base: str) -> str:
+		"""Return base or base (2)/(3)/... to avoid collisions."""
+		titles = {self.tabs.tabText(i) for i in range(self.tabs.count())}
+		if base not in titles:
+			return base
+		n = 2
+		while True:
+			cand = f"{base} ({n})"
+			if cand not in titles:
+				return cand
+			n += 1
+
+	def _duplicate_tab_from_index(self, idx: int):
+		"""Duplicate the tab at index if it's a console/GS tab."""
+		w = self.tabs.widget(idx)
+		meta = self._tab_meta.get(w)
+		if not meta:
+			return  # not a console/GS tab
+
+		kind = meta.get("kind")
+		sid = meta.get("sid")
+		host = meta.get("hostname") or ""
+		user = meta.get("username") or ""
+		arch = meta.get("arch") or ""
+
+		# refresh anything we can from cache
+		cached = self._lookup_from_cache(sid)
+		if not user:
+			user = cached.get("user") or cached.get("username") or user
+		if not arch:
+			arch = cached.get("arch") or arch
+
+		if kind == "console":
+			# Build title just like _open_console_tab, but force a unique copy
+			title = f"{_strip_host_prefix(user, host)}@{host}" if user else host
+			title = self._unique_tab_title(title)
+			w2 = SessionConsole(self.api, sid, host)
+			new_idx = self.tabs.addTab(w2, title)
+			self.tabs.setTabIcon(new_idx, QApplication.windowIcon())
+			self.tabs.setCurrentIndex(new_idx)
+			self._set_tab_meta(w2, "console", sid, host, user, arch)
+
+		elif kind == "gunnershell":
+			base = (f"GS — {_strip_host_prefix(user, host)}@{host}" if user else f"GS — {host}")
+			title = self._unique_tab_title(base)
+			w2 = GunnershellConsole(self.api, sid, host)
+			new_idx = self.tabs.addTab(w2, title)
+			self.tabs.setTabIcon(new_idx, QApplication.windowIcon())
+			self.tabs.setCurrentIndex(new_idx)
+			self._set_tab_meta(w2, "gunnershell", sid, host, user, arch)
+
+	def _copy_to_clipboard(self, text: str):
+		QApplication.clipboard().setText(text or "")
+
+	def _on_tabbar_menu(self, pos):
+		bar = self.tabs.tabBar()
+		idx = bar.tabAt(pos)
+		if idx < 0:
+			return
+
+		w = self.tabs.widget(idx)
+		meta = self._tab_meta.get(w) or {}
+
+		m = QMenu(self)
+
+		# Match Sessions tab: non-bold app font + dark menu stylesheet
+		mf = QFont(self.font()); mf.setBold(False)
+		m.setFont(mf)
+		m.setStyleSheet(self._menu_stylesheet_dark())  # <<<< apply identical style
+
+		# Optional actions for console/GS
+		is_cs = meta.get("kind") in ("console", "gunnershell")
+		if is_cs:
+			m.addAction("Duplicate Tab", lambda: self._duplicate_tab_from_index(idx))
+			m.addSeparator()
+			m.addAction("Copy SID",      lambda: self._copy_to_clipboard(meta.get("sid", "")))
+			m.addAction("Copy Username", lambda: self._copy_to_clipboard(meta.get("username", "")))
+			m.addAction("Copy Hostname", lambda: self._copy_to_clipboard(meta.get("hostname", "")))
+			if meta.get("sid") and not meta.get("username"):
+				cached = self._lookup_from_cache(meta["sid"])
+				u = cached.get("user") or cached.get("username") or ""
+				if u:
+					self._update_tab_meta_username(w, u)
+
+		# --- ALWAYS LAST: Close submenu ---
+		if m.actions():
+			m.addSeparator()
+
+		close_menu = m.addMenu("Close")
+
+		# Ensure the submenu renders EXACTLY the same (stylesheet doesn’t always cascade across menus)
+		close_menu.setFont(mf)
+		close_menu.setStyleSheet(self._menu_stylesheet_dark())  # <<<< force same style
+
+		act_close_right  = close_menu.addAction("Close tabs to the right")
+		act_close_left   = close_menu.addAction("Close tabs to the left")
+		act_close_others = close_menu.addAction("Close Others")
+
+		act_close_right.setEnabled(idx < self.tabs.count() - 1)
+		act_close_left.setEnabled(idx > 0)
+		act_close_others.setEnabled(self.tabs.count() > 1)
+
+		chosen = m.exec_(bar.mapToGlobal(pos))
+		if not chosen:
+			return
+
+		if chosen == act_close_right:
+			self._close_tabs_to_right(idx)
+		elif chosen == act_close_left:
+			self._close_tabs_to_left(idx)
+		elif chosen == act_close_others:
+			self._close_other_tabs(idx)
 
 	# ---------- Helpers: open/focus singleton tabs ----------
 	def _ensure_tab(self, attr_name: str, widget_factory, title: str):
@@ -310,14 +511,14 @@ class Dashboard(QWidget):
 		self._ensure_tab("_tab_operators", lambda: OperatorsTab(self.api), "Operators")
 
 	# ---------- Graph actions wiring ----------
-	def _focus_graph(self):
+	"""def _focus_graph(self):
 		try:
 			self.graph.view.centerOn(self.graph.c2)
 			self.graph.view.raise_()
 			# Give a gentle refresh
 			self.graph.reload()
 		except Exception:
-			pass
+			pass"""
 
 	def _kill_session(self, sid: str, _hostname: str):
 		"""
@@ -376,10 +577,22 @@ class Dashboard(QWidget):
 			if self.tabs.tabText(i) == title:
 				self.tabs.setCurrentIndex(i)
 				return
+
 		w = SessionConsole(self.api, sid, hostname)
 		idx = self.tabs.addTab(w, title)
 		self.tabs.setTabIcon(idx, QApplication.windowIcon())
 		self.tabs.setCurrentIndex(idx)
+		# When user clicks "Files" in the console, open a Files tab
+		w.files_requested.connect(self._open_files_tab)
+
+		# Store meta for tab-bar actions
+		arch = ""
+		try:
+			s_cache = self.sessions_ws.get_cached(sid) if hasattr(self, "sessions_ws") else {}
+			arch = (s_cache.get("metadata") or {}).get("arch") or s_cache.get("arch") or ""
+		except Exception:
+			pass
+		self._set_tab_meta(w, "console", sid, hostname, username, arch)
 
 		# If we didn’t have username yet, fetch it via WS and rename the tab once received
 		if not username and ws:
@@ -393,7 +606,37 @@ class Dashboard(QWidget):
 				j = self.tabs.indexOf(w)
 				if j >= 0:
 					self.tabs.setTabText(j, new_title)
+					self._update_tab_meta_username(w, u2)
 			ws.get(sid, cb=_cb)
+
+	def _open_files_tab(self, sid: str, hostname: str):
+		# avoid duplicates by title
+		title = f"Files — {hostname}"
+		for i in range(self.tabs.count()):
+			if self.tabs.tabText(i) == title:
+				self.tabs.setCurrentIndex(i)
+				return
+
+		s = self._lookup_from_cache(sid)
+		meta = s.get("metadata") or {}
+		os_type   = (meta.get("os") or s.get("os") or "").lower()
+		transport = (s.get("transport") or meta.get("transport") or "").lower()
+		interval  = meta.get("interval") or s.get("interval") or None
+		jitter    = meta.get("jitter") or s.get("jitter") or None
+
+		start_path = "C:\\" if os_type == "windows" else "/"
+
+		w = FileBrowser(
+			self.api, sid,
+			start_path=start_path,
+			os_type=os_type,
+			transport=transport,
+			beacon_interval=interval,
+			beacon_jitter_pct=int(jitter or 0),
+		)
+		idx = self.tabs.addTab(w, title)
+		self.tabs.setTabIcon(idx, QApplication.windowIcon())
+		self.tabs.setCurrentIndex(idx)
 
 	def _open_gunnershell_tab(self, sid: str, hostname: str):
 		# Prefer cached WS snapshot; if missing, ask WS 'get' and open on reply
@@ -438,6 +681,10 @@ class Dashboard(QWidget):
 		self.tabs.setTabIcon(idx, QApplication.windowIcon())
 		self.tabs.setCurrentIndex(idx)
 
+		arch = (sess.get("arch") or (sess.get("metadata") or {}).get("arch") or "")
+		user_for_meta = (sess.get("user") or sess.get("username") or (sess.get("metadata") or {}).get("user") or "")
+		self._set_tab_meta(w, "gunnershell", sid, hostname, user_for_meta, arch)
+
 	# In-Class Helpers
 
 	def _is_meta_ready(self, sess: dict) -> bool:
@@ -447,8 +694,51 @@ class Dashboard(QWidget):
 		hostname = meta.get("hostname") or sess.get("hostname")
 		user = meta.get("user") or sess.get("user") or sess.get("username")
 		return bool(hostname and user and os_str in ("windows", "linux"))
+
+	def _menu_stylesheet_dark(self) -> str:
+		return """
+			QMenu {
+				background:#1a1f29;
+				color:#e6e6e6;
+				border:1px solid #3b404a;
+			}
+			QMenu::separator {
+				height:1px;
+				background:#3b404a;
+				margin:6px 8px;
+			}
+			QMenu::item {
+				padding:6px 14px;
+				background:transparent;
+				font-weight:400;       
+				color:#e6e6e6;          
+			}
+			QMenu::item:selected {
+				background:#2f3540;
+				color:#ffffff;
+			}
+			QMenu::item:disabled {
+				color:#9aa3ad;          
+				font-weight:400;        
+			}
+		"""
 	
-	# Closing Tabs
+	# ---- Bulk close helpers (relative to a given index) ----
+	def _close_tabs_to_right(self, idx: int):
+		# close from rightmost down to the one just after idx
+		for j in range(self.tabs.count() - 1, idx, -1):
+			self._close_tab(j)
+
+	def _close_tabs_to_left(self, idx: int):
+		# close from the one just before idx down to 0
+		for j in range(idx - 1, -1, -1):
+			self._close_tab(j)
+
+	def _close_other_tabs(self, idx: int):
+		# close everything except idx; iterate in reverse to avoid index shifts
+		for j in range(self.tabs.count() - 1, -1, -1):
+			if j != idx:
+				self._close_tab(j)
 
 	def _close_tab(self, index: int):
 		w = self.tabs.widget(index)
@@ -464,5 +754,12 @@ class Dashboard(QWidget):
 
 		elif w is self._tab_operators:
 			self._tab_operators = None
+
+		# drop tab meta if present
+		try:
+			if w in self._tab_meta:
+				del self._tab_meta[w]
+		except Exception:
+			pass
 
 		self.tabs.removeTab(index)

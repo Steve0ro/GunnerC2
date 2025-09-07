@@ -31,6 +31,7 @@ class TcpCommandRouter:
 		self.send_lock = session.lock
 		self.recv_lock = session.recv_lock
 		self.exec_lock = session.exec_lock
+		self._transfer_use = False
 		logger.debug("[%s] TcpCommandRouter initialized for session %r",
 					 time.strftime("%Y-%m-%d %H:%M:%S"), session.sid)
 
@@ -60,7 +61,7 @@ class TcpCommandRouter:
 
 			# send wrapped command
 			try:
-				self.send(cmd, op_id=op_id, defender_bypass=defender_bypass)
+				self.send(cmd, op_id=op_id, defender_bypass=defender_bypass, transfer_use=transfer_use)
 			except Exception as e:
 				logger.warning("[%s] execute.send() error: %s", time.strftime("%H:%M:%S"), e)
 				if transfer_use:
@@ -74,7 +75,8 @@ class TcpCommandRouter:
 					op_id=op_id,
 					timeout=timeout,
 					portscan_active=portscan_active,
-					retries=retries
+					retries=retries,
+					transfer_use=transfer_use,
 				)
 			except Exception as e:
 				logger.warning("[%s] execute.receive() error: %s", time.strftime("%H:%M:%S"), e)
@@ -124,6 +126,10 @@ class TcpCommandRouter:
 			self.sock.setblocking(True)
 			self.sock.settimeout(self.session.metadata.get("tcp_timeout", 0.5))
 		logger.debug("[%s] Drain complete (%d bytes)", time.strftime("%H:%M:%S"), drained)
+
+	def _sh_quote(s: str) -> str:
+		# Single-quote for POSIX shells: ' -> '"'"'
+		return "'" + (s or "").replace("'", "'\"'\"'") + "'"
 
 	def send(self, cmd: str,
 			 op_id: str = "console",
@@ -183,7 +189,8 @@ class TcpCommandRouter:
 				op_id: str = "console",
 				timeout: float = None,
 				portscan_active: bool = False,
-				retries: int = 0) -> str:
+				retries: int = 0,
+				transfer_use: bool = False) -> str:
 		"""
 		Read from socket until both start/end tokens for this op_id are seen,
 		demux other operators' outputs, normalize and return your slice.
@@ -210,6 +217,12 @@ class TcpCommandRouter:
 						attempt += 1
 						continue
 					break
+
+				except (BlockingIOError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
+					# Non-blocking/EAGAIN or TLS wants – nothing ready yet
+					time.sleep(0.01)
+					continue
+
 				except (ConnectionResetError, BrokenPipeError, OSError):
 					logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)
 					if transfer_use:
@@ -231,10 +244,32 @@ class TcpCommandRouter:
 			old_to = self.sock.gettimeout()
 			self.sock.settimeout(timeout)
 
+		"""try:
+			reader = threading.Thread(target=_reader, daemon=True)
+			reader.start()
+			reader.join(timeout if timeout is not None else None)"""
+
 		try:
 			reader = threading.Thread(target=_reader, daemon=True)
 			reader.start()
-			reader.join(timeout if timeout is not None else None)
+
+			# Actively wait until we *see* both tokens or we hit the deadline.
+			deadline = time.time() + (timeout if timeout is not None else old_to or 0.5)
+			while True:
+				# Quick local check on what we have so far
+				joined = b"".join(chunks)
+				if start in joined and end in joined:
+					break
+				if not reader.is_alive():
+					break
+				now = time.time()
+				if now >= deadline:
+					break
+				# Don’t burn CPU; give the reader time to append
+				time.sleep(0.01)
+
+			# Grace period so the reader can append any final bytes
+			reader.join(0.05)
 
 		except (ConnectionResetError, BrokenPipeError, OSError, ConnectionError) as e:
 			logger.debug(brightred + f"Connect error ocurred on session {self.session.sid}" + reset)

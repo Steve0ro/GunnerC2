@@ -19,6 +19,8 @@ from PyQt5.QtWidgets import (
 	QWidget, QScrollBar, QApplication, QLineEdit, QComboBox, QToolButton, QVBoxLayout, QShortcut
 )
 
+from theme_center import theme_color, ThemeManager
+
 try:
 	from .websocket_client import SessionsWSClient
 
@@ -37,16 +39,17 @@ class SessionNode:
 
 
 # ---------- constants / styling ----------
-BLACK = QColor(0, 0, 0)
-NEON = QColor(57, 255, 20)  # #39ff14
-NEON_DIM = QColor(45, 200, 16)
-STEEL = QColor(180, 180, 200)
-RED = QColor(232, 46, 46)
-ORANGE = QColor(255, 140, 0)
-CHARCOAL = QColor(28, 32, 36)
-LABEL_GRAY = QColor(210, 210, 210)
 ARROW_GLOW = False
 ARROW_GAP = 6.0  # pixels to stop short of the C2 icon edge
+
+BLACK = theme_color("window_bg", "#000000")  # or just QColor(0,0,0)
+NEON = theme_color("neon", "#39ff14")
+NEON_DIM = theme_color("neon_dim", "#2dc810")
+STEEL = QColor(180, 180, 200)
+RED = theme_color("danger", "#e82e2e")
+ORANGE = theme_color("warning", "#ff8c00")
+CHARCOAL = QColor(28, 32, 36)
+LABEL_GRAY = QColor(210, 210, 210)
 
 NODE_W = 86
 NODE_H = 66
@@ -294,6 +297,7 @@ class AgentItem(QGraphicsObject):
 	open_console = pyqtSignal(str, str)  # sid, hostname
 	kill_session = pyqtSignal(str, str)  # sid, hostname
 	open_gunnershell = pyqtSignal(str, str)  # sid, hostname
+	open_file_browser = pyqtSignal(str, str)
 	position_changed = pyqtSignal()      # emitted when user moves the item
 
 	def __init__(self, node: SessionNode):
@@ -362,6 +366,10 @@ class AgentItem(QGraphicsObject):
 		act_gs      = m.addAction("Open GunnerShell")
 		act_kill    = m.addAction("Kill Session")
 
+		# --- NEW Browsers submenu ---
+		browsers_menu = m.addMenu("Browsers")
+		act_files = browsers_menu.addAction("Open File Browser")  # <-- item you asked for
+
 		copy_menu = _FastCloseMenu("Copy", m, leave_delay_ms=80)  # faster close
 		m.addMenu(copy_menu)
 		act_c_sid   = copy_menu.addAction("SID")
@@ -383,6 +391,8 @@ class AgentItem(QGraphicsObject):
 			self.open_gunnershell.emit(self.node.sid, self.node.hostname)
 		elif chosen == act_kill:
 			self.kill_session.emit(self.node.sid, self.node.hostname)
+		elif chosen == act_files:  
+			self.open_file_browser.emit(self.node.sid, self.node.hostname)
 		elif chosen in (act_c_sid, act_c_user, act_c_host, act_c_os, act_c_proto):  # <--
 			val = (
 				self.node.sid if chosen == act_c_sid else
@@ -907,7 +917,7 @@ class GraphView(QGraphicsView):
 		ov = getattr(self, "_overlay", None)
 		if ov is None:
 			return QRect()
-		top_left = ov.mapToGlobal(QPoint(0, 0))
+		top_left = ov.mapToGlobal(QPoint(0, 0)) 
 		return QRect(top_left, ov.size())
 
 	def set_zoom_overlay_visible(self, visible: bool):
@@ -942,6 +952,7 @@ class SessionGraph(QWidget):
 	open_console_requested = pyqtSignal(str, str)  # sid, hostname
 	open_gunnershell_requested = pyqtSignal(str, str)  # sid, hostname
 	kill_session_requested = pyqtSignal(str, str)  # sid, hostname
+	open_file_browser_requested = pyqtSignal(str, str)
 
 	# ---- WS signal names we’ll probe for (support multiple client versions)
 	_WS_SIG_SNAPSHOT = ("snapshot", "full_snapshot")
@@ -960,6 +971,8 @@ class SessionGraph(QWidget):
 		lay = QHBoxLayout(self)
 		lay.setContentsMargins(0, 0, 0, 0)
 		lay.addWidget(self.view)
+
+		ThemeManager.instance().themeChanged.connect(lambda _t: self._retint_graph())
 
 		# items
 		self.c2 = C2Item()
@@ -998,6 +1011,13 @@ class SessionGraph(QWidget):
 	@property
 	def sessions_ws(self):
 		return self._sessions_ws
+
+	def _retint_graph(self):
+		# schedule repaints so pens/brushes pick up new theme colors
+		self.scene.update()
+		for e in getattr(self, "edge_items", []):
+			try: e.refresh()
+			except Exception: pass
 
 	# ----- Filter Functions -----
 	def visit_c2(self):
@@ -1314,6 +1334,7 @@ class SessionGraph(QWidget):
 			item.open_console.connect(self._emit_open_console)
 			item.open_gunnershell.connect(self._emit_open_gunnershell)
 			item.kill_session.connect(self._emit_kill_session)
+			item.open_file_browser.connect(self._emit_open_file_browser)
 			item.position_changed.connect(lambda: self._save_timer.start())
 			self.scene.addItem(item)
 			self.agent_items[node.sid] = item
@@ -1330,6 +1351,10 @@ class SessionGraph(QWidget):
 			item._label.setText(f"{clean_user}@{node.hostname}")
 			item._label.setPos(-item._label.boundingRect().width()/2, item._rect.height()/2 + 6)
 			#item._label.setPos(-item._label.boundingRect().width()/2, NODE_H/2 + 6)
+
+	# File Browser Emit!
+	def _emit_open_file_browser(self, sid: str, host: str):
+		self.open_file_browser_requested.emit(sid, host)
 
 	# ----- persistence -----
 	def _load_positions(self) -> Dict[str, Tuple[float, float]]:

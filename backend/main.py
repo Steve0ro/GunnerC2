@@ -14,7 +14,7 @@ from core.teamserver import auth_manager as auth
 
 # 🔧 use relative imports inside the backend package
 from .websocket_operators import router as operators_ws_router
-from .listeners import router as listeners_router
+from backend.websocket_listeners import router as listeners_ws_router
 from .websocket_sessions import router as sessions_ws_router
 from .files import router as files_router
 from .payloads import router as payloads_router
@@ -43,7 +43,7 @@ def _startup():
 
 # Routers
 app.include_router(operators_ws_router)
-app.include_router(listeners_router, prefix="/listeners", tags=["listeners"])
+app.include_router(listeners_ws_router)
 #app.include_router(sessions_router, prefix="/sessions", tags=["sessions"])
 app.include_router(sessions_ws_router)
 app.include_router(files_ws_router)

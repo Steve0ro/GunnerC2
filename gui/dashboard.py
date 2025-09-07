@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
 	QMenu, QAction
 )
 
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QPen, QBrush
 
 from session_graph import SessionGraph
 from sessions_tab import SessionsTab
@@ -16,6 +16,8 @@ from operators_tab import OperatorsTab
 from file_browser import FileBrowser
 from session_console import SessionConsole
 from gunnershell_console import GunnershellConsole
+
+from theme_center import ThemeManager, ThemePanel
 
 try:
 	# same import pattern you used elsewhere
@@ -84,6 +86,7 @@ class Dashboard(QWidget):
 		self.graph.open_console_requested.connect(self._open_console_tab)
 		self.graph.open_gunnershell_requested.connect(self._open_gunnershell_tab)
 		self.graph.kill_session_requested.connect(self._kill_session)
+		self.graph.open_file_browser_requested.connect(self._open_files_tab)
 
 		# ---------- Sessions WS (shared, for lookups) ----------
 		self.sessions_ws = SessionsWSClient(self.api)
@@ -110,7 +113,7 @@ class Dashboard(QWidget):
 		self.split.setHandleWidth(8)
 		self.split.setOpaqueResize(True)
 		current = self.tabs.currentWidget()
-		is_heavy = isinstance(current, PayloadsTab)
+		is_heavy = self._is_heavy_tab(current)
 
 		if is_heavy:
 			self.split.setChildrenCollapsible(False)
@@ -142,6 +145,8 @@ class Dashboard(QWidget):
 		self._pre_payload_sizes = None
 		self._suspend_split_save = False
 		self._split_locked = False
+		self._last_nonheavy_sizes = None  # remember a good 'normal' layout
+		self._was_heavy = False
 
 		# Now that splitter exists, hook the signal and apply mode
 		self.tabs.currentChanged.connect(self._apply_splitter_mode)
@@ -168,6 +173,7 @@ class Dashboard(QWidget):
 			self.split.setSizes([600, 260])
 
 		# Ensure we do not start collapsed at the top/bottom
+		QTimer.singleShot(0, self._remember_nonheavy_sizes)
 		QTimer.singleShot(0, self._normalize_initial_splitter)
 
 		# Debounced save on move (prevents stutter while dragging)
@@ -209,6 +215,10 @@ class Dashboard(QWidget):
 
 		# Open Sessions by default in the bottom browser to mirror classic UX
 		self._open_sessions_tab()
+
+	def _is_heavy_tab(self, w):
+		# Treat both Payloads and Files as “heavy” (maximize bottom pane)
+		return isinstance(w, (PayloadsTab, FileBrowser))
 
 	def _update_zoom_overlay_visibility(self):
 		"""Hide zoom overlay if the tab bar (or its near area) is close to it."""
@@ -276,7 +286,17 @@ class Dashboard(QWidget):
 		except Exception:
 			pass
 
-	# NEW: lock/unlock the vertical splitter (prevents user dragging)
+	
+	def _remember_nonheavy_sizes(self):
+		try:
+			sz = self.split.sizes()
+			# treat <80px as 'collapsed'; only store healthy layouts
+			if sz and min(sz) >= 80:
+				self._last_nonheavy_sizes = list(sz)
+		except Exception:
+			pass
+
+	# lock/unlock the vertical splitter (prevents user dragging)
 	def _set_splitter_locked(self, locked: bool):
 		self._split_locked = bool(locked)
 		try:
@@ -302,39 +322,59 @@ class Dashboard(QWidget):
 		self._settings.setValue("dashboard/splitter_state", self.split.saveState())
 
 	def _apply_splitter_mode(self, *_):
-		"""
-		Rubber-band resize on heavy tab; auto-maximize tabs for Payloads,
-		RESTORE sizes when leaving, and LOCK the splitter while on Payloads.
-		"""
 		w = self.tabs.currentWidget()
-		is_payloads = isinstance(w, PayloadsTab)
+		is_heavy = self._is_heavy_tab(w)
+		was_heavy = getattr(self, "_was_heavy", False)
 
 		# smoother dragging elsewhere
-		self.split.setOpaqueResize(not is_payloads)
+		self.split.setOpaqueResize(not is_heavy)
 
-		if is_payloads:
-			# remember sizes once
-			if self._pre_payload_sizes is None:
-				self._pre_payload_sizes = self.split.sizes() or [self.height() - 280, 280]
+		if is_heavy:
+			# entering heavy from non-heavy → save a GOOD baseline & collapse
+			if not was_heavy:
+				if self._pre_payload_sizes is None:
+					# Prefer last healthy non-heavy layout, else current if not collapsed, else 70/30
+					baseline = None
+					if getattr(self, "_last_nonheavy_sizes", None) and min(self._last_nonheavy_sizes) >= 80:
+						baseline = list(self._last_nonheavy_sizes)
+					else:
+						cur = self.split.sizes()
+						if cur and min(cur) >= 80:
+							baseline = list(cur)
+						else:
+							h = max(self.height(), 600)
+							baseline = [int(h * 0.70), int(h * 0.30)]
+					self._pre_payload_sizes = baseline
 
-			# maximize bottom, collapse top
-			total = sum(self.split.sizes()) or max(1, self.split.height())
-			self._suspend_split_save = True
-			self.split.setSizes([0, max(1, total)])  # tabs fill window
-			QTimer.singleShot(0, lambda: setattr(self, "_suspend_split_save", False))
+				# collapse to give everything to the bottom (tabs area)
+				total = sum(self.split.sizes()) or max(1, self.split.height())
+				self._suspend_split_save = True
+				self.split.setSizes([0, max(1, total)])   # tabs fill window
+				QTimer.singleShot(0, lambda: setattr(self, "_suspend_split_save", False))
 
-			# LOCK: user cannot move the bar while in Payloads
+			# heavy→heavy: stay collapsed; just ensure locked
 			self._set_splitter_locked(True)
 
 		else:
-			# leaving Payloads → restore sizes and UNLOCK
-			if self._pre_payload_sizes:
-				self._suspend_split_save = True
-				self.split.setSizes(self._pre_payload_sizes)
-				self._pre_payload_sizes = None
-				QTimer.singleShot(0, lambda: setattr(self, "_suspend_split_save", False))
+			# leaving heavy → restore once (after hidden heavy tab runs its hideEvent)
+			if was_heavy and self._pre_payload_sizes:
+				def _restore():
+					self._suspend_split_save = True
+					try:
+						self.split.setSizes(self._pre_payload_sizes)
+					finally:
+						self._pre_payload_sizes = None
+						QTimer.singleShot(0, lambda: setattr(self, "_suspend_split_save", False))
+						# Update baseline now that we're back to normal
+						self._remember_nonheavy_sizes()
+				QTimer.singleShot(0, _restore)
+			else:
+				# staying non-heavy → refresh baseline
+				self._remember_nonheavy_sizes()
 
 			self._set_splitter_locked(False)
+
+		self._was_heavy = is_heavy
 		self._update_zoom_overlay_visibility()
 
 	def _lookup_from_cache(self, sid: str) -> dict:
@@ -458,6 +498,7 @@ class Dashboard(QWidget):
 		close_menu.setFont(mf)
 		close_menu.setStyleSheet(self._menu_stylesheet_dark())  # <<<< force same style
 
+		act_close_this   = close_menu.addAction("Close Tab")
 		act_close_right  = close_menu.addAction("Close tabs to the right")
 		act_close_left   = close_menu.addAction("Close tabs to the left")
 		act_close_others = close_menu.addAction("Close Others")
@@ -470,7 +511,9 @@ class Dashboard(QWidget):
 		if not chosen:
 			return
 
-		if chosen == act_close_right:
+		if chosen == act_close_this:      
+			self._close_tab(idx)
+		elif chosen == act_close_right:
 			self._close_tabs_to_right(idx)
 		elif chosen == act_close_left:
 			self._close_tabs_to_left(idx)

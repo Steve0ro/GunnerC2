@@ -246,7 +246,12 @@ def generate_gunnerplant_reverse_https(ip, port, obs, beacon_interval, headers, 
 			post_client_mapping={"output": "{{payload}}"},
 		)
 
-	raw = make_raw(ip, port, cfg=cfg, scheme=scheme)
+	if profile:
+		raw = make_raw(ip, port, cfg=cfg, scheme=scheme, profile=True)
+
+	else:
+		raw = make_raw(ip, port, cfg=cfg, scheme=scheme, profile=False)
+
 	print(raw)
 
 	out = Path.cwd()

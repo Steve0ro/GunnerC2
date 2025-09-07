@@ -1,7 +1,8 @@
-import logging
-logger = logging.getLogger(__name__)
+from core.transfers.logutil import setup_once, get_logger
+setup_once()
+logger = get_logger("manager")  # name will be 'core.transfers.manager'
 
-import base64, os, time, re, ntpath
+import base64, os, time, re, ntpath, textwrap
 from typing import Optional
 from .base import TransferProtocol
 from ..state import TransferState
@@ -16,6 +17,35 @@ brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
 brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 brightblue = "\001" + Style.BRIGHT + Fore.BLUE + "\002"
 reset = Style.RESET_ALL
+
+# --------- logging helpers (structured + readable) ---------------------------
+BANNER = "=" * 72
+SUBBAR = "-" * 72
+
+def _banner(title: str):
+	# Leading newline to visually separate blocks in single log file.
+	logger.debug("\n%s\n%s\n%s", BANNER, f"[TRANSFERS] {title}", BANNER)
+
+def _sub(title: str):
+	logger.debug("%s\n[%s]", SUBBAR, title)
+
+def _kv(**pairs):
+	# Compact key=value line; values repr-ed; None shown explicitly
+	items = ", ".join(f"{k}={repr(v)}" for k, v in pairs.items())
+	logger.debug("  %s", items)
+
+def _preview(s: str, n: int = 160) -> str:
+	if s is None:
+		return "None"
+	s = str(s).replace("\r", "\\r").replace("\n", "\\n")
+	return (s[:n] + ("…(+%d)" % (len(s) - n) if len(s) > n else ""))
+
+def _bytes(n: int) -> str:
+	try:
+		return f"{n} bytes"
+	except Exception:
+		return str(n)
+
 
 def _b64_to_bytes(s: str) -> bytes:
 	# strip whitespace/newlines safely
@@ -46,24 +76,41 @@ class ShellProtocol(TransferProtocol):
 	def __init__(self, op_id: Optional[str] = None, timeout: float = None):
 		self.op_id = op_id
 		self.timeout = timeout
+		_banner("ShellProtocol.__init__")
+		_kv(op_id=self.op_id, timeout=self.timeout)
 
 	def _run_cmd(self, sid: str, cmd: str, transport: str, op_id: Optional[str]) -> str:
 		"""
 		Route command to the correct execution path and return stdout as string (normalized).
 		"""
-		tr = transport.lower()
-		try:
-			out = (http_exec.run_command_http(sid, cmd, op_id=op_id, transfer_use=True, timeout=self.timeout) if tr in ("http","https") 
-				else tcp_exec.run_command_tcp(sid, cmd, timeout=0.5, portscan_active=True, op_id=op_id, transfer_use=True))
+		_sub("RUN_CMD begin")
+		_kv(sid=sid, transport=transport, op_id=op_id)
+		logger.debug("  cmd.preview=%s", _preview(cmd))
+		t0 = time.time()
 
+		tr = transport.lower()
+
+		_eff_timeout = self.timeout if (self.timeout is not None) else 5.0
+		logger.debug("  _run_cmd.timeout=%.3fs transport=%s", _eff_timeout, tr)
+		try:
+			out = (
+				http_exec.run_command_http(sid, cmd, op_id=op_id, transfer_use=True, timeout=_eff_timeout) if tr in ("http","https")
+				else tcp_exec.run_command_tcp(sid, cmd, timeout=_eff_timeout, portscan_active=True,
+											  op_id=op_id, transfer_use=True)
+			)
 		except Exception as e:
 			# Normalize into a connection error for the transfer manager.
+			logger.debug("  _run_cmd.exception=%r (elapsed=%.4fs)", e, time.time() - t0)
 			raise ConnectionError(str(e))
 
 		out = (out or "")
 		# Some older paths may return operator-formatted error lines instead of raising.
 		if out.lstrip().startswith("[!]") or "Error:" in out:
+			logger.debug("  _run_cmd.operator_error_line=%s", _preview(out))
 			raise ConnectionError(out.strip())
+
+		elapsed = time.time() - t0
+		logger.debug("  _run_cmd.ok elapsed=%.4fs out.len=%d out.preview=%s", elapsed, len(out), _preview(out))
 		
 		return out
 
@@ -73,6 +120,9 @@ class ShellProtocol(TransferProtocol):
 		Return file size in bytes, or -1 if missing/unreachable.
 		Use simple, newline-terminated integer output to avoid fragile parsing.
 		"""
+		_banner("REMOTE_SIZE probe")
+		_kv(sid=st.sid, os_type=st.os_type, transport=st.transport, remote_path=st.remote_path, is_folder=getattr(st, "is_folder", None))
+
 		if st.os_type == "linux":
 			sh = (
 				"bash -lc "
@@ -80,47 +130,75 @@ class ShellProtocol(TransferProtocol):
 				"else echo -1; fi\""
 			)
 			try:
+				logger.debug("  linux.stat.cmd=%s", _preview(sh))
 				out = (self._run_cmd(st.sid, sh, st.transport, self.op_id) or "").strip()
 
 			except Exception as e:
-				logger.warning(brightred + f"Connection Error in remote size grabber: {e}")
+				logger.warning(brightred + f"Connection Error in remote size grabber: {e}" + reset)
 				raise ConnectionError("Connection Error in remote size in upload function _remote_size") from e
 
 			if out == "":
-				logger.warning(brightred + f"Agent unreachable while stat()" + reset)
-				raise ConnectionError("agent unreachable while stat()")
+				logger.debug("  linux.stat.result=EMPTY -> -1")
+				#logger.warning(brightred + "agent unreachable while Get-Item (empty output)" + reset)
+				# Treat as missing instead of throwing; caller will decide how to proceed.
+				return -1
 
 			try:
-				return int(out)
+				val = int(out)
+				logger.debug("  linux.stat.result=%s", val)
+				return val
 
 			except Exception:
 				logger.warning(brightred + f"bad stat output: {out!r}" + reset)
 				raise ConnectionError(f"bad stat output: {out!r}")
 
 		else:
-			# Windows: plain integer, -1 if missing
+			# Windows: deterministic output
+			#  - integer size for files
+			#  - 'DIR' for directories
+			#  - '-1' for missing/denied/any error
 			ps = (
-				"[Console]::OutputEncoding=[System.Text.Encoding]::ASCII; "
-				f"$p={_ps_quote(st.remote_path)}; "
-				"$i=Get-Item -LiteralPath $p -ErrorAction SilentlyContinue; "
-				"if ($null -eq $i) { '-1' } else { $i.Length }"
+				"$ErrorActionPreference='Stop';"
+				"[Console]::OutputEncoding=[System.Text.Encoding]::ASCII;"
+				f"$p={_ps_quote(st.remote_path)};"
+				"try {"
+				"  $i=Get-Item -LiteralPath $p -Force;"
+				"  if ($null -eq $i) { '-1' } "
+				"  elseif ($i.PSIsContainer) { 'DIR' } "
+				"  else { [string]$i.Length }"
+				"} catch { '-1' }"
 			)
+
 			try:
+				logger.debug("  win.size.cmd=%s", ps)
 				out = (self._run_cmd(st.sid, ps, st.transport, self.op_id) or "").strip()
 
 			except Exception as e:
-				logger.warning(brightred + f"Connection Error in remote size grabber: {e}")
+				logger.warning(brightred + f"Connection Error in remote size grabber: {e}" + reset)
 				raise ConnectionError("Connection Error in remote size in upload function _remote_size") from e
 
-			if out == "":
-				logger.warning(brightred + "agent unreachable while Get-Item" + reset)
-				raise ConnectionError("agent unreachable while Get-Item")
+			logger.debug(f"GOT OUTPUT SIZE: {out}")
 
-			elif out == "-1":
+			if out == "":
+				"""logger.warning(brightred + "agent unreachable while Get-Item" + reset)
+				raise ConnectionError("agent unreachable while Get-Item")"""
+				# Non-terminating PS noise can yield empty stdout; treat as "missing".
+				logger.debug("  win.size.result=EMPTY -> coerced to -1")
+				out = "-1"
+
+			if out.upper() == "DIR":
+				# Directory sentinel (lets caller decide next step).
+				logger.debug("  win.size.result=DIR -> -2 sentinel")
+				return -2
+
+			if out == "-1":
+				logger.debug("  win.size.result=-1 (missing/denied)")
 				return -1
 
 			try:
-				return int(out)
+				val = int(out)
+				logger.debug("  win.size.result=%s", val)
+				return val
 
 			except Exception:
 				logger.warning(brightred + f"bad size output: {out!r}" + reset)
@@ -128,8 +206,22 @@ class ShellProtocol(TransferProtocol):
 
 	def _linux_read_chunk(self, st: TransferState, index: int) -> bytes:
 		# dd avoids partial lines and is faster than tail/head for big files
+		#bs = st.chunk_size
+		#cmd = f"dd if={_linux_shq(st.remote_path)} bs={bs} skip={index} count=1 status=none | base64"
+
+		# Read a full block at index with no short reads and emit unwrapped base64.
+		# - iflag=fullblock → dd reads exactly one whole bs block unless it's the tail
+		# - base64 -w 0     → avoid line wraps (smaller payload, faster decode)
 		bs = st.chunk_size
-		cmd = f"dd if={_linux_shq(st.remote_path)} bs={bs} skip={index} count=1 status=none | base64"
+		cmd = (
+			f"dd if={_linux_shq(st.remote_path)} "
+			f"bs={bs} skip={index} count=1 status=none iflag=fullblock | base64 -w 0"
+		)
+
+		_sub("LINUX READ CHUNK")
+		_kv(index=index, chunk_size=st.chunk_size, offset=index*st.chunk_size)
+		logger.debug("  cmd.preview=%s", _preview(cmd))
+
 		try:
 			out = self._run_cmd(st.sid, cmd, st.transport, self.op_id)
 
@@ -140,11 +232,17 @@ class ShellProtocol(TransferProtocol):
 		if not out.strip():
 			logger.warning(brightred + "No output from agent for linux chunk read!" + reset)
 			raise ConnectionError("no output from agent for linux chunk read")
-		return _b64_to_bytes(out)
+		dec = _b64_to_bytes(out)
+		logger.debug("  read.ok b64.len=%d decoded.len=%d", len(out.strip()), len(dec))
+		return dec
 
 	def _windows_read_chunk(self, st: TransferState, index: int) -> bytes:
 		offset = index * st.chunk_size
 		n      = st.chunk_size
+
+		_sub("WINDOWS READ CHUNK")
+		_kv(index=index, offset=offset, chunk_size=n)
+
 		ps = (
 			f"$fs=[System.IO.File]::OpenRead({_ps_quote(st.remote_path)});"
 			f"$fs.Seek({offset},'Begin') > $null;"
@@ -162,12 +260,18 @@ class ShellProtocol(TransferProtocol):
 
 		if not out.strip():
 			raise ConnectionError("no output from agent for windows chunk read")
-		return _b64_to_bytes(out)
+		dec = _b64_to_bytes(out)
+		logger.debug("  read.ok b64.len=%d decoded.len=%d", len(out.strip()), len(dec))
+		return dec
 
 	def _linux_write_chunk(self, st: TransferState, offset: int, chunk_b64: str) -> None:
 		"""
 		Idempotent write at absolute offset using dd (no append). Truncation is not performed here.
 		"""
+
+		_sub("LINUX WRITE CHUNK")
+		_kv(offset=offset, b64_len=len(chunk_b64))
+
 		# bash -lc for strict error propagation; dd writes exactly at byte offset
 		cmd = (
 			"bash -lc "
@@ -176,7 +280,7 @@ class ShellProtocol(TransferProtocol):
 			f"dd of={_linux_shq(st.remote_path)} bs=1M seek={offset} conv=notrunc status=none\""
 		)
 		try:
-			out = self._run_cmd(st.sid, cmd, st.transport, self.op_id)
+			self._run_cmd(st.sid, cmd, st.transport, self.op_id)
 
 		except Exception as e:
 			logger.warning(brightred + f"Connection Error in _run_cmd: {e}")
@@ -189,6 +293,10 @@ class ShellProtocol(TransferProtocol):
 		"""
 		# Defensively escape any single quotes in the payload/path for PS single-quoted literals.
 		# (Base64 normally has no single quotes, but this is future-proof and safe.)
+
+		_sub("WINDOWS WRITE CHUNK")
+		_kv(offset=offset, b64_len=len(chunk_b64))
+
 		safe_chunk = chunk_b64.replace("'", "''")
 		safe_path  = st.remote_path.replace("'", "''")
 
@@ -212,6 +320,10 @@ class ShellProtocol(TransferProtocol):
 		"""
 		If is_folder, create an archive remotely and switch st.remote_path to that archive (resumable by bytes).
 		"""
+
+		_banner("PREPARE REMOTE ARCHIVE")
+		_kv(sid=st.sid, os_type=st.os_type, transport=st.transport, remote_path=st.remote_path, is_folder=st.is_folder)
+
 		if not st.is_folder:
 			return
 
@@ -253,6 +365,7 @@ class ShellProtocol(TransferProtocol):
 			base = os.path.basename(st.remote_path.rstrip("/\\"))
 			parent = os.path.dirname(st.remote_path.rstrip("/\\"))
 
+		_kv(base=base, parent=parent)
 		if st.os_type == "windows":
 			# Build ...\repos.zip next to the folder, never inside it.
 			remote_zip = ntpath.join(parent, base + ".zip")
@@ -265,13 +378,21 @@ class ShellProtocol(TransferProtocol):
 				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
 				raise ConnectionError("Connection Error in _run_cmd") from e
 
+			_kv(remote_zip=remote_zip)
+			# Prefer Compress-Archive when available; otherwise fall back to .NET ZipFile.
 			zip_cmd = (
-				"[Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null; "
-				f"[IO.Compression.ZipFile]::CreateFromDirectory({_ps_quote(st.remote_path)},{_ps_quote(remote_zip)},"
-				"[IO.Compression.CompressionLevel]::Optimal,$false)"
+				"$ErrorActionPreference='Stop';"
+				f"$src={_ps_quote(st.remote_path)}; $dst={_ps_quote(remote_zip)};"
+				"try {"
+				"  Compress-Archive -Path $src -DestinationPath $dst -Force -ErrorAction Stop"
+				"} catch {"
+				"  [Reflection.Assembly]::LoadWithPartialName('System.IO.Compression.FileSystem') | Out-Null; "
+				"  [IO.Compression.ZipFile]::CreateFromDirectory($src,$dst,[IO.Compression.CompressionLevel]::Optimal,$false)"
+				"}"
 			)
 			try:
 				out = self._run_cmd(st.sid, zip_cmd, st.transport, self.op_id)
+				logger.debug("  zip.create.output=%s", _preview(out))
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in _run_cmd: {e}" + reset)
@@ -281,6 +402,7 @@ class ShellProtocol(TransferProtocol):
 			size_ps = (
 				f"if (Test-Path {_ps_quote(remote_zip)}) {{ (Get-Item {_ps_quote(remote_zip)}).Length }} else {{ 0 }}"
 			)
+			logger.debug("  zip.poll.size.cmd=%s", _preview(size_ps))
 			for _ in range(30):
 				try:
 					sz = (self._run_cmd(st.sid, size_ps, st.transport, self.op_id) or "").strip()
@@ -290,6 +412,7 @@ class ShellProtocol(TransferProtocol):
 					raise ConnectionError("Connection Error in _run_cmd") from e
 
 				try:
+					logger.debug("    zip.poll.size.val=%r", sz)
 					if int(sz) > 22:  # larger than empty ZIP EOCD
 						break
 				except Exception:
@@ -300,6 +423,7 @@ class ShellProtocol(TransferProtocol):
 			st.remote_path         = remote_zip
 			# Save fingerprint + mark prepared
 			mtime_ps = f"(Get-Item {_ps_quote(remote_zip)}).LastWriteTimeUtc.Ticks"
+			logger.debug("  zip.mtime.cmd=%s", _preview(mtime_ps))
 			try:
 				mtime = _parse_int(self._run_cmd(st.sid, mtime_ps, st.transport, self.op_id))
 				length = _parse_int(self._run_cmd(st.sid, size_ps,   st.transport, self.op_id))
@@ -312,13 +436,16 @@ class ShellProtocol(TransferProtocol):
 			opt["archive_path"] = remote_zip
 			opt["archive_ext"] = ".zip"
 			opt["archive_fp"] = {"size": length, "mtime": mtime}
+			_kv(archive_path=opt["archive_path"], size=length, mtime_ticks=mtime)
 			st.options = opt
 
 		else:
 			remote_tar = f"/tmp/{base}.tar.gz"
+			_kv(remote_tar=remote_tar)
 			try:
 				self._run_cmd(st.sid, f"rm -f {_linux_shq(remote_tar)}", st.transport, self.op_id)
 				tar_cmd = f"tar czf {_linux_shq(remote_tar)} -C {_linux_shq(st.remote_path)} ."
+				logger.debug("  tar.create.cmd=%s", _preview(tar_cmd))
 				self._run_cmd(st.sid, tar_cmd, st.transport, self.op_id)
 
 			except Exception as e:
@@ -331,6 +458,8 @@ class ShellProtocol(TransferProtocol):
 			# Save fingerprint + mark prepared
 			size_sh = f"bash -lc 'stat -c %s {_linux_shq(remote_tar)}'"
 			mtime_sh = f"bash -lc 'stat -c %Y {_linux_shq(remote_tar)}'"
+			logger.debug("  tar.size.cmd=%s", _preview(size_sh))
+			logger.debug("  tar.mtime.cmd=%s", _preview(mtime_sh))
 			try:
 				length = _parse_int(self._run_cmd(st.sid, size_sh,  st.transport, self.op_id))
 				mtime  = _parse_int(self._run_cmd(st.sid, mtime_sh, st.transport, self.op_id))
@@ -343,11 +472,14 @@ class ShellProtocol(TransferProtocol):
 			opt["archive_path"] = remote_tar
 			opt["archive_ext"] = ".tar.gz"
 			opt["archive_fp"] = {"size": length, "mtime": mtime}
+			_kv(archive_path=opt["archive_path"], size=length, mtime_epoch=mtime)
 			st.options = opt
 
 	# ---------- protocol API ----------
 	def init_download(self, st: TransferState) -> TransferState:
 		# If folder → build remote archive first.
+		_banner("INIT DOWNLOAD")
+		_kv(tid=st.tid, sid=st.sid, os_type=st.os_type, transport=st.transport, remote_path=st.remote_path, is_folder=st.is_folder, chunk_size=st.chunk_size)
 		self._prepare_remote_archive(st)
 		try:
 			total = self._remote_size(st)
@@ -359,13 +491,17 @@ class ShellProtocol(TransferProtocol):
 		st.total_bytes  = total
 		st.total_chunks = chunk_count(total, st.chunk_size)
 		st.status = "running"
+		_kv(total_bytes=st.total_bytes, total_chunks=st.total_chunks, status=st.status)
 		return st
 
 	def next_download_chunk(self, st: TransferState) -> Optional[int]:
+		_sub("NEXT DOWNLOAD CHUNK")
 		idx = st.next_index
 		if idx >= st.total_chunks:
+			logger.debug("  finished: idx=%d total_chunks=%d", idx, st.total_chunks)
 			return None
 		offset = index_to_offset(idx, st.chunk_size)
+		_kv(idx=idx, offset=offset, chunk_size=st.chunk_size, bytes_done=st.bytes_done, total_bytes=st.total_bytes)
 		# Pull the chunk bytes
 		try:
 			data = self._linux_read_chunk(st, idx) if st.os_type == "linux" else self._windows_read_chunk(st, idx)
@@ -385,6 +521,7 @@ class ShellProtocol(TransferProtocol):
 
 		# Non-final chunk must be exactly chunk_size bytes
 		if idx < st.total_chunks - 1 and len(data) != st.chunk_size:
+			logger.debug("  short_read mid-stream: got=%d expected=%d", len(data), st.chunk_size)
 			raise ConnectionError(f"short read ({len(data)} bytes) at chunk {idx}")
 
 		"""# If we are NOT on the last chunk, we must receive a full chunk.
@@ -401,11 +538,13 @@ class ShellProtocol(TransferProtocol):
 			expected_last = st.total_bytes - index_to_offset(idx, st.chunk_size)
 			if len(data) > expected_last:
 				data = data[:expected_last]
-				
+		
+		logger.debug("  write_at: path=%s offset=%d write_len=%d (is_last=%r)", st.tmp_local_path, offset, len(data), is_last)
 		ensure_prealloc(st.tmp_local_path, st.total_bytes)
 		write_at(st.tmp_local_path, offset, data)
 		st.bytes_done += len(data)
 		st.next_index += 1
+		_kv(bytes_done=st.bytes_done, next_index=st.next_index)
 		return idx
 
 	def init_upload(self, st: TransferState) -> TransferState:
@@ -467,6 +606,8 @@ class ShellProtocol(TransferProtocol):
 		return idx
 
 	def cleanup(self, st: TransferState) -> None:
+		_banner("CLEANUP")
+		_kv(tid=st.tid, sid=st.sid, cleanup_cmd=st.cleanup_remote_cmd, archive=st.archive_remote_path)
 		if st.cleanup_remote_cmd:
 			try:
 				self._run_cmd(st.sid, st.cleanup_remote_cmd, st.transport, self.op_id)

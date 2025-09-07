@@ -12,6 +12,8 @@ try:
 except Exception:
     from websocket_client import OperatorsWSClient
 
+from theme_center import theme_color
+
 # -------- Helpers --------
 def _ago(ts: str) -> str:
     # expects ISO or empty; keep simple to avoid deps
@@ -98,11 +100,23 @@ class OpsModel(QAbstractTableModel):
         src = proxy.mapToSource(proxy.index(proxy_row,0)).row()
         return self._rows[src] if 0<=src<len(self._rows) else None
 
-class RoleChip(QStyledItemDelegate):
+"""class RoleChip(QStyledItemDelegate):
     def paint(self, p, opt, idx):
         text = idx.data(Qt.DisplayRole) or ""
         bg = QColor("#34425a") if text=="operator" else QColor("#5a3434")
         fg = QColor("#dbe7ff") if text=="operator" else QColor("#ffd6d6")
+        p.save(); p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(Qt.NoPen); p.setBrush(QBrush(bg))
+        r = opt.rect.adjusted(6,4,-6,-4); p.drawRoundedRect(r, 8, 8)
+        p.setPen(QPen(fg)); p.drawText(r, Qt.AlignCenter, text or "—")
+        p.restore()"""
+
+class RoleChip(QStyledItemDelegate):
+    def paint(self, p, opt, idx):
+        text = (idx.data(Qt.DisplayRole) or "").lower()
+        bg = theme_color("chip_operator_bg") if text == "operator" else theme_color("chip_admin_bg")
+        fg = theme_color("chip_operator_fg") if text == "operator" else theme_color("chip_admin_fg")
+
         p.save(); p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(Qt.NoPen); p.setBrush(QBrush(bg))
         r = opt.rect.adjusted(6,4,-6,-4); p.drawRoundedRect(r, 8, 8)
@@ -190,7 +204,7 @@ class OperatorsTab(QWidget):
 
         layout = QVBoxLayout(self); layout.setContentsMargins(0,0,0,0)
         layout.addLayout(top); layout.addWidget(self.table)
-        self._apply_style()
+        #self._apply_style()
 
         # signals
         self.search.textChanged.connect(self.proxy.setText)

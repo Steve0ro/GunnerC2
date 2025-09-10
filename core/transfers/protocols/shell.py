@@ -79,7 +79,7 @@ class ShellProtocol(TransferProtocol):
 		_banner("ShellProtocol.__init__")
 		_kv(op_id=self.op_id, timeout=self.timeout)
 
-	def _run_cmd(self, sid: str, cmd: str, transport: str, op_id: Optional[str]) -> str:
+	def _run_cmd(self, sid: str, cmd: str, transport: str, op_id: Optional[str], defender_bypass: bool = False) -> str:
 		"""
 		Route command to the correct execution path and return stdout as string (normalized).
 		"""
@@ -95,7 +95,7 @@ class ShellProtocol(TransferProtocol):
 		try:
 			out = (
 				http_exec.run_command_http(sid, cmd, op_id=op_id, transfer_use=True, timeout=_eff_timeout) if tr in ("http","https")
-				else tcp_exec.run_command_tcp(sid, cmd, timeout=_eff_timeout, portscan_active=True,
+				else tcp_exec.run_command_tcp(sid, cmd, timeout=_eff_timeout, defender_bypass=defender_bypass, portscan_active=True,
 											  op_id=op_id, transfer_use=True)
 			)
 		except Exception as e:
@@ -125,13 +125,13 @@ class ShellProtocol(TransferProtocol):
 
 		if st.os_type == "linux":
 			sh = (
-				"bash -lc "
+				"bash -c "
 				f"\"if [ -f { _linux_shq(st.remote_path) } ]; then stat -c %s { _linux_shq(st.remote_path) }; "
 				"else echo -1; fi\""
 			)
 			try:
 				logger.debug("  linux.stat.cmd=%s", _preview(sh))
-				out = (self._run_cmd(st.sid, sh, st.transport, self.op_id) or "").strip()
+				out = (self._run_cmd(st.sid, sh, st.transport, self.op_id, defender_bypass=True) or "").strip()
 
 			except Exception as e:
 				logger.warning(brightred + f"Connection Error in remote size grabber: {e}" + reset)

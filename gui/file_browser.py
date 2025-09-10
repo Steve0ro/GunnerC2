@@ -1265,12 +1265,18 @@ class FileBrowser(QWidget):
 	def _cancel_edit_to_crumbs(self):
 		self._path_stack.setCurrentWidget(self._crumbs_host)
 
-	def _apply_path_edit(self):
+	"""def _apply_path_edit(self):
 		txt = (self.path_edit.text() or "").strip()
 		if txt:
 			self._cancel_edit_to_crumbs()
-			log.debug("apply_path_edit -> %s (sid=%s)", txt, self.sid)
-			self._navigate_or_queue(txt)
+			self._navigate_or_queue(_norm_path_os(txt, self.path, self.os_type))"""
+
+	def _apply_path_edit(self):
+		# consistent indent + call the helper correctly
+		txt = (self.path_edit.text() or "").strip()
+		if txt:
+			self._cancel_edit_to_crumbs()
+			self._navigate_or_queue(self._norm_path_os(txt, self.path, self.os_type))
 
 	# ----- Users root helpers -----
 	def _users_root_path(self) -> str:
@@ -1813,8 +1819,8 @@ class FileBrowser(QWidget):
 		self.fws.list_dir(self.sid, target); self._busy_guard.start(self._busy_timeout_ms())
 
 	def _fmt_label(self, name: str, is_dir: bool) -> str:
-		# Linux shows trailing slash on folders; Windows does not
-		return name + ("/" if is_dir and self.os_type != "windows" else "")
+		# Don’t suffix folders with a slash on any OS
+		return name
 
 	def _on_list(self, path: str, entries: list, ok: bool = True):
 		self._busy = False
@@ -1828,9 +1834,14 @@ class FileBrowser(QWidget):
 		if inflight:
 			req, tgt, reason, t0 = inflight
 			lat_ms = int((time.time() - t0) * 1000)
-			match = (self._norm_path(attempted) == tgt)
-			log.debug("on_list correlate req=%s reason=%s target=%s attempted=%s match=%s latency_ms=%s (sid=%s)",
-					  req, reason, tgt, attempted, match, lat_ms, self.sid); self._inflight_req = None
+			tgt_n = self._norm_path(tgt)
+			att_n = self._norm_path(attempted)
+			#match = (self._norm_path(attempted) == tgt)
+			if att_n != tgt_n:
+				log.warning("Ignoring stale list reply: requested=%s got=%s latency=%sms (sid=%s)", tgt_n, att_n, lat_ms, self.sid)
+				return
+			# Only clear after we know it's a match
+			self._inflight_req = None
 
 		if not ok:
 			self._pending_path = None
@@ -1889,6 +1900,7 @@ class FileBrowser(QWidget):
 			self._showing_quick = False
 			self._update_search_placeholder()
 			self._update_nav_buttons()
+			self._update_tab_title()
 			log.info("navigated path=%s items=%s (sid=%s)", self.path, len(new_map), self.sid)
 
 			# ---- History push for path changes (HARD REBUILD branch) ----
@@ -1898,6 +1910,9 @@ class FileBrowser(QWidget):
 				pass
 			self._hist_freeze = False
 			self._update_nav_buttons()
+
+			if self._drain_queued_nav():
+				return
 			return
 
 		else:
@@ -1980,13 +1995,17 @@ class FileBrowser(QWidget):
 		self._hist_freeze = False
 		self._update_nav_buttons()
 
-		# If a nav was queued during busy, perform it now.
+		"""# If a nav was queued during busy, perform it now.
 		if self._queued_nav:
 			queued = self._queued_nav
 			self._queued_nav = None
 			if queued and self._norm_path(queued) != self.path:
 				self._navigate_to(queued)
-				return
+				return"""
+
+		# Drain any queued navigation now that this refresh completed.
+		if self._drain_queued_nav():
+			return
 
 	# ---------- Drives & Quick Access ----------
 	def _on_drives(self, rows: list):
@@ -2377,6 +2396,40 @@ class FileBrowser(QWidget):
 				except Exception: pass
 			return out
 
+	@staticmethod
+	def _norm_path_os(p: str, current: str, os_type: str) -> str:
+		"""
+		Normalize a path for the target OS.
+		- Windows: collapse, keep 'C:\\' with trailing backslash; preserve UNC prefix.
+		- POSIX:   collapse, keep leading '/', never leave empty; strip trailing '/' except root.
+		"""
+		p = (p or "")
+		if (os_type or "").lower() == "windows":
+			q = p.replace("/", "\\")
+			if q.startswith("\\\\"):  # UNC: keep \\server\share
+				head = "\\\\"
+				tail = re.sub(r"\\+", "\\\\", q[2:])
+				q = head + ntpath.normpath(tail).lstrip("\\")
+			else:
+				q = ntpath.normpath(q if re.match(r"^[A-Za-z]:", q) else ntpath.join(current or "C:\\", q))
+			if re.fullmatch(r"[A-Za-z]:", q):
+				q += "\\"
+			return q
+		else:
+			q = p.replace("\\", "/")
+			base = current if (current or "").startswith("/") else "/"
+			q = posixpath.normpath(q if q.startswith("/") else posixpath.join(base, q))
+			return "/" if q == "/" else q.rstrip("/")
+
+	@staticmethod
+	def _join_path_os(dir_path: str, name: str, os_type: str) -> str:
+		if (os_type or "").lower() == "windows":
+			a = dir_path.replace("/", "\\").rstrip("\\")
+			return (a + "\\" + name) if a else name
+		else:
+			a = dir_path.replace("\\", "/").rstrip("/")
+			return (a + "/" + name) if a else ("/" + name if not name.startswith("/") else name)
+
 	def _join_path(self, base: str, name: str) -> str:
 		name = (name or "").rstrip("/\\")
 		if self.os_type == "windows":
@@ -2390,6 +2443,18 @@ class FileBrowser(QWidget):
 			if n.startswith("/"):
 				return self._norm_path(n)
 			return self._norm_path(posixpath.join(self._norm_path(base), n))
+
+	def _looks_like_path(self, s: str) -> bool:
+		if not s:
+			return False
+		t = s.strip()
+		if self.os_type == "windows":
+			if re.match(r"^[A-Za-z]:[\\/]", t):  # C:\... or C:/...
+				return True
+			if t.startswith("\\\\"):             # UNC
+				return True
+		# POSIX-ish or “has a slash somewhere”
+		return t.startswith("/") or ("/" in t or "\\" in t)
 
 	def _on_search_return(self):
 		"""

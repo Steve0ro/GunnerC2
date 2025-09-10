@@ -1,9 +1,9 @@
 # gui/dashboard.py
-from PyQt5.QtCore import Qt, QSettings, QByteArray, QTimer, QPoint, QRect, QEvent
+from PyQt5.QtCore import Qt, QSettings, QByteArray, QTimer, QPoint, QRect, QEvent, QObject
 
 from PyQt5.QtWidgets import (
 	QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTabWidget, QSplitter, QMessageBox, QApplication, QSizePolicy,
-	QMenu, QAction
+	QMenu, QAction, QTabBar
 )
 
 from PyQt5.QtGui import QFont, QIcon, QPixmap, QPainter, QPen, QBrush
@@ -14,6 +14,7 @@ from listeners_tab import ListenersTab
 from payloads_tab import PayloadsTab
 from operators_tab import OperatorsTab
 from file_browser import FileBrowser
+from ldap_browser import LdapBrowser
 from session_console import SessionConsole
 from gunnershell_console import GunnershellConsole
 
@@ -87,6 +88,7 @@ class Dashboard(QWidget):
 		self.graph.open_gunnershell_requested.connect(self._open_gunnershell_tab)
 		self.graph.kill_session_requested.connect(self._kill_session)
 		self.graph.open_file_browser_requested.connect(self._open_files_tab)
+		self.graph.open_ldap_browser_requested.connect(self._open_ldap_tab)
 
 		# ---------- Sessions WS (shared, for lookups) ----------
 		self.sessions_ws = SessionsWSClient(self.api)
@@ -213,12 +215,27 @@ class Dashboard(QWidget):
 		QTimer.singleShot(0, self._update_zoom_overlay_visibility)
 		self.split.splitterMoved.connect(lambda *_: (self._split_save_timer.start(), self._update_zoom_overlay_visibility()))
 
+		host = self._host_tabwidget()
+		if host:
+			host.currentChanged.connect(self._on_host_tab_changed)
+
 		# Open Sessions by default in the bottom browser to mirror classic UX
 		self._open_sessions_tab()
 
 	def _is_heavy_tab(self, w):
 		# Treat both Payloads and Files as “heavy” (maximize bottom pane)
-		return isinstance(w, (PayloadsTab, FileBrowser))
+		return isinstance(w, (PayloadsTab, FileBrowser, LdapBrowser))
+
+	def _on_host_tab_changed(self, idx: int):
+		host = self._host_tabwidget()
+		if not host:
+			return
+		w = host.widget(idx)
+		if not self._is_heavy_tab(w):
+			self._exit_heavy_mode()
+		else:
+			# ensure we stay collapsed if we hopped heavy→heavy
+			self._enforce_heavy_layout()
 
 	def _update_zoom_overlay_visibility(self):
 		"""Hide zoom overlay if the tab bar (or its near area) is close to it."""
@@ -321,7 +338,220 @@ class Dashboard(QWidget):
 			return
 		self._settings.setValue("dashboard/splitter_state", self.split.saveState())
 
-	def _apply_splitter_mode(self, *_):
+	class _HandleEater(QObject):
+		def eventFilter(self, obj, ev):
+			if ev.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseMove, QEvent.HoverMove, QEvent.HoverEnter):
+				return True
+			return False
+
+	def _host_tabwidget(self) -> QTabWidget | None:
+		w = self.parent()
+		while w is not None and not isinstance(w, QTabWidget):
+			w = w.parent()
+		return w if isinstance(w, QTabWidget) else None
+
+	def _find_workspace_splitter(self) -> QSplitter | None:
+		w = self.parent()
+		while w is not None:
+			if isinstance(w, QSplitter) and w.orientation() == Qt.Vertical:
+				return w
+			w = w.parent()
+		return None
+
+	def _find_workspace_splitter_and_child(self):
+		child = self
+		p = self.parent()
+		while p is not None and not isinstance(p, QSplitter):
+			child = p
+			p = p.parent()
+		return (p, child) if isinstance(p, QSplitter) else (None, None)
+
+	def _collapse_workspace_header(self, on: bool):
+		sp = getattr(self, "_ws_split", None) or self._find_workspace_splitter()
+		if not isinstance(sp, QSplitter):
+			return
+		if on:
+			self._ws_split = sp
+			if getattr(self, "_ws_old_sizes", None) is None:
+				sizes = list(sp.sizes() or [])
+				if len(sizes) >= 2 and min(sizes) > 2:
+					self._ws_old_sizes = sizes
+			if getattr(self, "_ws_old_handle_w", None) is None:
+				self._ws_old_handle_w = sp.handleWidth()
+			if getattr(self, "_ws_old_css", None) is None:
+				self._ws_old_css = sp.styleSheet()
+
+			total = max(1, sum(sp.sizes()) or 1)
+			sp.setSizes([0, total])
+			try: sp.setHandleWidth(0)
+			except Exception: pass
+			try:
+				sp.setStyleSheet((self._ws_old_css or "") + " QSplitter::handle { image: none; background: transparent; height: 0px; }")
+			except Exception: pass
+		else:
+			try:
+				if getattr(self, "_ws_old_sizes", None):
+					sp.setSizes(self._ws_old_sizes)
+				if getattr(self, "_ws_old_handle_w", None) is not None:
+					sp.setHandleWidth(self._ws_old_handle_w)
+				if getattr(self, "_ws_old_css", None) is not None:
+					sp.setStyleSheet(self._ws_old_css)
+			except Exception: pass
+
+	def _ws(self):
+		# Find the outer vertical workspace splitter (header above, content below)
+		w = self.parent()
+		while w is not None:
+			if isinstance(w, QSplitter) and w.orientation() == Qt.Vertical:
+				return w
+			w = w.parent()
+		return None
+
+	def _cache_normal_ws_sizes(self):
+		sp = self._ws()
+		if not sp:
+			return
+		sizes = list(sp.sizes() or [])
+		if len(sizes) >= 2 and sum(sizes) > 0:
+			# Save both on the splitter (shared) and on self (local fallback)
+			sp.setProperty("heavyNormalSizes", sizes)
+			self._ws_normal_sizes = sizes
+			# Also remember a sane handle width and css (once)
+			if getattr(self, "_ws_restore_handle", None) is None:
+				try:
+					self._ws_restore_handle = sp.handleWidth()
+				except Exception:
+					self._ws_restore_handle = 6
+			if getattr(self, "_ws_restore_css", None) is None:
+				self._ws_restore_css = sp.styleSheet() or ""
+
+	def _restore_workspace_from_cache(self):
+		sp = self._ws()
+		if not sp:
+			return
+
+		normal = sp.property("heavyNormalSizes") or getattr(self, "_ws_normal_sizes", None)
+		if not (isinstance(normal, list) and len(normal) >= 2 and sum(normal) > 0):
+			# fallback: ~22% header / 78% content
+			total = max(1, sum(sp.sizes()) or 1)
+			normal = [int(total * 0.22), total - int(total * 0.22)]
+
+		# restore sizes + handle visuals
+		sp.setSizes([int(normal[0]), int(normal[1])])
+		try:
+			if getattr(self, "_ws_restore_handle", None) is not None:
+				sp.setHandleWidth(int(self._ws_restore_handle))
+		except Exception:
+			pass
+		try:
+			sp.setStyleSheet(getattr(self, "_ws_restore_css", ""))
+		except Exception:
+			pass
+
+		# fight late relayouts with a couple of delayed re-applies
+		QTimer.singleShot(0,  lambda: sp.setSizes([int(normal[0]), int(normal[1])]))
+		QTimer.singleShot(50, lambda: sp.setSizes([int(normal[0]), int(normal[1])]))
+		QTimer.singleShot(120, lambda: sp.setSizes([int(normal[0]), int(normal[1])]))
+
+	def _lock_workspace_splitter(self):
+		if getattr(self, "_locked_ws_splitter", None):
+			return
+		sp, child = self._find_workspace_splitter_and_child()
+		if not sp:
+			return
+		# eat mouse on all handles
+		self._locked_handle_blockers = []
+		for i in range(1, sp.count()):
+			h = sp.handle(i)
+			if h:
+				blocker = self._HandleEater(h)
+				h.installEventFilter(blocker)
+				try: h.setCursor(Qt.ArrowCursor)
+				except Exception: pass
+				self._locked_handle_blockers.append((h, blocker))
+
+		self._locked_ws_old_css = sp.styleSheet()
+		sp.setStyleSheet("QSplitter::handle { image: none; background: transparent; }")
+
+		# give our pane almost everything so it sits flush under the app header
+		try:
+			idx = sp.indexOf(child)
+			if idx != -1:
+				sizes = sp.sizes()
+				total = max(1, sum(sizes) or 1)
+				new = [1] * len(sizes)
+				new[idx] = max(total - (len(sizes) - 1), 1)
+				sp.setSizes(new)
+		except Exception:
+			pass
+
+		self._locked_ws_splitter = sp
+
+	def _unlock_workspace_splitter(self):
+		sp = getattr(self, "_locked_ws_splitter", None)
+		if not sp:
+			return
+		for h, blocker in getattr(self, "_locked_handle_blockers", []):
+			try: h.removeEventFilter(blocker)
+			except Exception: pass
+		self._locked_handle_blockers = []
+		try:
+			sp.setStyleSheet(self._locked_ws_old_css or "")
+		except Exception: pass
+		self._locked_ws_splitter = None
+		self._locked_ws_old_css = None
+
+	def _lock_host_tabbar(self):
+		host = self._host_tabwidget()
+		if not host:
+			return
+		tb = host.tabBar()
+		if isinstance(tb, QTabBar):
+			self._host_tabbar = tb
+			self._host_tabbar_was_movable = tb.isMovable()
+			tb.setMovable(False)
+			tb.setDocumentMode(True)
+			tb.setFocusPolicy(Qt.NoFocus)
+
+	def _unlock_host_tabbar(self):
+		tb = getattr(self, "_host_tabbar", None)
+		if isinstance(tb, QTabBar):
+			try: tb.setMovable(bool(getattr(self, "_host_tabbar_was_movable", True)))
+			except Exception: pass
+		self._host_tabbar = None
+		self._host_tabbar_was_movable = None
+
+	def _enforce_heavy_layout(self):
+		# collapse Dashboard’s own graph→tabs splitter
+		self._collapse_tabs_fullscreen()
+		# fight late relayouts caused by tab insertions
+		QTimer.singleShot(0, self._collapse_tabs_fullscreen)
+		QTimer.singleShot(50, self._collapse_tabs_fullscreen)
+
+	def _enter_heavy_mode(self):
+		if getattr(self, "_heavy_mode_active", False):
+			# heavy→heavy hop: just re-enforce
+			self._enforce_heavy_layout()
+			return
+		self._heavy_mode_active = True
+		# collapse & lock the OUTER header splitter (like FileBrowser does)
+		self._collapse_workspace_header(True)
+		self._lock_host_tabbar()
+		self._lock_workspace_splitter()
+		# and collapse our inner splitter hard
+		self._enforce_heavy_layout()
+
+	def _exit_heavy_mode(self):
+		if not getattr(self, "_heavy_mode_active", False):
+			return
+		self._heavy_mode_active = False
+		# restore outer splitter + tabbar
+		self._unlock_workspace_splitter()
+		self._unlock_host_tabbar()
+		self._collapse_workspace_header(False)
+		# existing logic will restore self.split sizes when switching to non-heavy
+
+	"""def _apply_splitter_mode(self, *_):
 		w = self.tabs.currentWidget()
 		is_heavy = self._is_heavy_tab(w)
 		was_heavy = getattr(self, "_was_heavy", False)
@@ -372,6 +602,89 @@ class Dashboard(QWidget):
 				# staying non-heavy → refresh baseline
 				self._remember_nonheavy_sizes()
 
+			self._set_splitter_locked(False)
+
+		self._was_heavy = is_heavy
+		self._update_zoom_overlay_visibility()"""
+
+	def _collapse_tabs_fullscreen(self):
+		"""Give all vertical space to the bottom tabs area."""
+		sizes = self.split.sizes()
+		total = sum(sizes) or max(1, self.split.height())
+		self._suspend_split_save = True
+		try:
+			self.split.setSizes([0, max(1, total)])
+		finally:
+			QTimer.singleShot(0, lambda: setattr(self, "_suspend_split_save", False))
+
+	"""def _apply_splitter_mode(self, *_):
+		w = self.tabs.currentWidget()
+		is_heavy = self._is_heavy_tab(w)
+		was_heavy = getattr(self, "_was_heavy", False)
+
+		self.split.setOpaqueResize(not is_heavy)
+
+		if is_heavy:
+			# entering heavy from non-heavy → save baseline & collapse
+			if not was_heavy:
+				if self._pre_payload_sizes is None:
+					baseline = None
+					if getattr(self, "_last_nonheavy_sizes", None) and min(self._last_nonheavy_sizes) >= 80:
+						baseline = list(self._last_nonheavy_sizes)
+					else:
+						cur = self.split.sizes()
+						if cur and min(cur) >= 80:
+							baseline = list(cur)
+						else:
+							h = max(self.height(), 600)
+							baseline = [int(h * 0.70), int(h * 0.30)]
+					self._pre_payload_sizes = baseline
+
+				self._collapse_tabs_fullscreen()
+
+			else:
+				# heavy → heavy: if the graph re-expanded for any reason, re-collapse
+				sizes = self.split.sizes()
+				if sizes and sizes[0] > 8:          # tolerance so "almost 0" is OK
+					self._collapse_tabs_fullscreen()
+
+			self._set_splitter_locked(True)
+
+		else:
+			if was_heavy and self._pre_payload_sizes:
+				def _restore():
+					self._suspend_split_save = True
+					try:
+						self.split.setSizes(self._pre_payload_sizes)
+					finally:
+						self._pre_payload_sizes = None
+						QTimer.singleShot(0, lambda: setattr(self, "_suspend_split_save", False))
+						self._remember_nonheavy_sizes()
+				QTimer.singleShot(0, _restore)
+			else:
+				self._remember_nonheavy_sizes()
+
+			self._set_splitter_locked(False)
+
+		self._was_heavy = is_heavy
+		self._update_zoom_overlay_visibility()"""
+
+	def _apply_splitter_mode(self, *_):
+		w = self.tabs.currentWidget()
+		is_heavy = self._is_heavy_tab(w)
+		was_heavy = getattr(self, "_was_heavy", False)
+
+		self.split.setOpaqueResize(not is_heavy)
+
+		if is_heavy:
+			self._enter_heavy_mode()
+			self._set_splitter_locked(True)
+		else:
+			self._exit_heavy_mode()
+			# restore the OUTER workspace split back to normal
+			self._restore_workspace_from_cache()
+			# after things settle, remember this as the new “normal”
+			QTimer.singleShot(0, self._cache_normal_ws_sizes)
 			self._set_splitter_locked(False)
 
 		self._was_heavy = is_heavy
@@ -680,6 +993,29 @@ class Dashboard(QWidget):
 		idx = self.tabs.addTab(w, title)
 		self.tabs.setTabIcon(idx, QApplication.windowIcon())
 		self.tabs.setCurrentIndex(idx)
+
+	def _open_ldap_tab(self, sid: str, hostname: str):
+		title = f"LDAP — {hostname}"
+
+		# If it's already open: move it to index 0 and focus it
+		for i in range(self.tabs.count()):
+			if self.tabs.tabText(i) == title:
+				if i != 0:
+					w   = self.tabs.widget(i)
+					ico = self.tabs.tabIcon(i)
+					self.tabs.removeTab(i)
+					self.tabs.insertTab(0, w, ico, title)
+				self.tabs.setCurrentIndex(0)
+				self._apply_splitter_mode()  # keep "heavy" behavior active
+				return
+
+
+		# Create and insert at index 0
+		w = LdapBrowser(self.api, sid, hostname)
+		idx = self.tabs.insertTab(0, w, title)
+		self.tabs.setTabIcon(idx, QApplication.windowIcon())
+		self.tabs.setCurrentIndex(idx)
+		self._apply_splitter_mode()
 
 	def _open_gunnershell_tab(self, sid: str, hostname: str):
 		# Prefer cached WS snapshot; if missing, ask WS 'get' and open on reply

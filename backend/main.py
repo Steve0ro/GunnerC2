@@ -21,6 +21,7 @@ from .payloads import router as payloads_router
 from .websocket_console import router as ws_router
 from .websocket_gunnershell import router as gs_router
 from .websocket_files import router as files_ws_router
+from .websocket_ldap import router as ldap_ws_router
 
 app = FastAPI(title="GunnerC2 Integrated API", version="1.0")
 
@@ -50,6 +51,7 @@ app.include_router(files_ws_router)
 app.include_router(payloads_router, prefix="/payloads", tags=["payloads"])
 app.include_router(ws_router, tags=["websocket"])
 app.include_router(gs_router, tags=["websocket"])
+app.include_router(ldap_ws_router, tags=["websocket"])
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("GUNNER_BACKEND_PORT", "8000")))

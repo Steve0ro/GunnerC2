@@ -298,6 +298,7 @@ class AgentItem(QGraphicsObject):
 	kill_session = pyqtSignal(str, str)  # sid, hostname
 	open_gunnershell = pyqtSignal(str, str)  # sid, hostname
 	open_file_browser = pyqtSignal(str, str)
+	open_ldap_browser = pyqtSignal(str, str)
 	position_changed = pyqtSignal()      # emitted when user moves the item
 
 	def __init__(self, node: SessionNode):
@@ -369,6 +370,7 @@ class AgentItem(QGraphicsObject):
 		# --- NEW Browsers submenu ---
 		browsers_menu = m.addMenu("Browsers")
 		act_files = browsers_menu.addAction("Open File Browser")  # <-- item you asked for
+		act_ldap  = browsers_menu.addAction("Open LDAP Browser")
 
 		copy_menu = _FastCloseMenu("Copy", m, leave_delay_ms=80)  # faster close
 		m.addMenu(copy_menu)
@@ -387,12 +389,19 @@ class AgentItem(QGraphicsObject):
 
 		if chosen == act_console:
 			self.open_console.emit(self.node.sid, self.node.hostname)
+
 		elif chosen == act_gs:
 			self.open_gunnershell.emit(self.node.sid, self.node.hostname)
+
 		elif chosen == act_kill:
 			self.kill_session.emit(self.node.sid, self.node.hostname)
+
 		elif chosen == act_files:  
 			self.open_file_browser.emit(self.node.sid, self.node.hostname)
+
+		elif chosen == act_ldap:
+			self.open_ldap_browser.emit(self.node.sid, self.node.hostname)
+
 		elif chosen in (act_c_sid, act_c_user, act_c_host, act_c_os, act_c_proto):  # <--
 			val = (
 				self.node.sid if chosen == act_c_sid else
@@ -953,6 +962,7 @@ class SessionGraph(QWidget):
 	open_gunnershell_requested = pyqtSignal(str, str)  # sid, hostname
 	kill_session_requested = pyqtSignal(str, str)  # sid, hostname
 	open_file_browser_requested = pyqtSignal(str, str)
+	open_ldap_browser_requested = pyqtSignal(str, str)  # sid, hostname
 
 	# ---- WS signal names we’ll probe for (support multiple client versions)
 	_WS_SIG_SNAPSHOT = ("snapshot", "full_snapshot")
@@ -1335,6 +1345,7 @@ class SessionGraph(QWidget):
 			item.open_gunnershell.connect(self._emit_open_gunnershell)
 			item.kill_session.connect(self._emit_kill_session)
 			item.open_file_browser.connect(self._emit_open_file_browser)
+			item.open_ldap_browser.connect(self._emit_open_ldap_browser)
 			item.position_changed.connect(lambda: self._save_timer.start())
 			self.scene.addItem(item)
 			self.agent_items[node.sid] = item
@@ -1352,9 +1363,12 @@ class SessionGraph(QWidget):
 			item._label.setPos(-item._label.boundingRect().width()/2, item._rect.height()/2 + 6)
 			#item._label.setPos(-item._label.boundingRect().width()/2, NODE_H/2 + 6)
 
-	# File Browser Emit!
+	# ----- Browser Emits -----
 	def _emit_open_file_browser(self, sid: str, host: str):
 		self.open_file_browser_requested.emit(sid, host)
+
+	def _emit_open_ldap_browser(self, sid: str, host: str):
+		self.open_ldap_browser_requested.emit(sid, host)
 
 	# ----- persistence -----
 	def _load_positions(self) -> Dict[str, Tuple[float, float]]:

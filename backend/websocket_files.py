@@ -53,13 +53,13 @@ def _resolve_sid(sid: str) -> str:
 		pass
 	return sid
 
-def _run_remote(sid: str, cmd: str, transport: str, timeout: float | None = 10.0, log=None) -> str:
+def _run_remote(sid: str, cmd: str, transport: str, timeout: float | None = 10.0, log=None, defender_bypass: bool = False) -> str:
 	"""Run a command on the session and log the outcome (truncated)."""
 	preview = safe_preview(cmd, limit=240)
 	if transport in ("http", "https"):
 		out = http_exec.run_command_http(sid, cmd, op_id="files", timeout=timeout) or ""
 	else:
-		out = tcp_exec.run_command_tcp(sid, cmd, timeout=1.0, portscan_active=True, op_id="files") or ""
+		out = tcp_exec.run_command_tcp(sid, cmd, timeout=1.0, defender_bypass=defender_bypass, portscan_active=True, op_id="files") or ""
 
 	if log:
 		log.debug("remote.exec",
@@ -177,23 +177,23 @@ async def files_ws(ws: WebSocket):
 		else:
 			# ---------- Linux / Posix ----------
 			# Add %u (owner username) to the printed columns.
-			sh = (
-				"bash -lc " +
-				_shq(
-					"P=%s;"
-					"if [ ! -d \"$P\" ]; then echo MISSING; exit 0; fi; "
-					"(find \"$P\" -maxdepth 1 -mindepth 1 -printf '%f\\t%y\\t%s\\t%T@\\t%u\\n' 2>/dev/null) || true"
-				) % path
+			cmd = (
+				'P=$1; FMT=$2; '
+    			'[ -d "$P" ] || { echo MISSING; exit 0; }; '
+    			'find "$P" -maxdepth 1 -mindepth 1 -printf "$FMT" 2>/dev/null || true'
 			)
 
-			out = _run_remote(sid, sh, transport, log=log)
+			# One quoted string for the command, then two quoted args: path and format
+			sh = "sh -c " + _shq(cmd) + " _ " + _shq(path) + " " + _shq(r"%f\t%y\t%s\t%T@\t%u\n")
+
+			out = _run_remote(sid, sh, transport, log=log, defender_bypass=True)
+
 			if "MISSING" in (out or ""):
 				log.info("fs.list.missing", extra={"sid": sid, "path": path})
 				return await _ws_send(ws, {"type":"fs.list","req_id":req_id,"path":path,"entries":[],"ok":False}, log)
 
 			entries = []
 			for line in (out or "").splitlines():
-				# name, type, size, mtime, owner
 				name, typ, sz, mt, owner = (line.split("\t") + ["","","","",""])[:5]
 				is_dir   = typ.lower().startswith("d")
 				size     = None if is_dir else int(sz or 0)
@@ -208,7 +208,7 @@ async def files_ws(ws: WebSocket):
 					"owner":  owner or ""
 				})
 
-			log.info("fs.list.ok", extra={"sid": sid, "path": path, "count": len(entries)})
+			log.info("fs.list.ok", extra={"sid": sid, "path": path, "count": len(entries), "cmd": sh, "output": out})
 			await _ws_send(ws, {"type":"fs.list","req_id":req_id,"path":path,"entries":entries,"ok":True}, log)
 
 	async def _do_delete(req: Dict[str, Any]):
@@ -274,7 +274,7 @@ async def files_ws(ws: WebSocket):
 						'fi'
 					) % (target, "1" if allow_dir else "0")
 				)
-				out = _run_remote(sid, sh, transport, log=log)
+				out = _run_remote(sid, sh, transport, log=log, defender_bypass=True)
 
 			txt = (out or "").replace("\r", "").strip()
 			log.debug("fs.delete.raw", extra={"preview": txt[:300]})
@@ -330,7 +330,7 @@ async def files_ws(ws: WebSocket):
 				out = _run_remote(sid, ps, transport, log=log)
 			else:
 				cmd = f"set -e; P={_shq(full)}; if [ -e \"$P\" ]; then echo EXISTS; else mkdir -p \"$P\"; fi; [ -d \"$P\" ] && echo OK || echo ERR"
-				out = _run_remote(sid, "bash -lc " + _shq(cmd), transport, log=log)
+				out = _run_remote(sid, "bash -lc " + _shq(cmd), transport, log=log, defender_bypass=True)
 
 			txt = (out or "").strip()
 			ok = ("OK" in txt) or ("EXISTS" in txt and bool(req.get("ok_if_exists", True)))
@@ -375,7 +375,7 @@ async def files_ws(ws: WebSocket):
 				out = _run_remote(sid, ps, transport, log=log)
 			else:
 				cmd = f"set -e; F={_shq(full)}; mkdir -p \"$(dirname \"$F\")\"; [ -e \"$F\" ] && echo EXISTS || ( : > \"$F\" && echo OK )"
-				out = _run_remote(sid, "bash -lc " + _shq(cmd), transport, log=log)
+				out = _run_remote(sid, "bash -lc " + _shq(cmd), transport, log=log, defender_bypass=True)
 
 			txt = (out or "").strip()
 			ok = ("OK" in txt) or ("EXISTS" in txt and bool(req.get("ok_if_exists", True)))
@@ -920,26 +920,44 @@ async def files_ws(ws: WebSocket):
 			log.info("fs.drives.ok", extra={"sid": sid, "count": len(rows)})
 			return await _ws_send(ws, {"type":"fs.drives","drives":rows, "req_id":req_id}, log)
 
+		# ---------- LINUX / POSIX ----------
+		# Use POSIX format (-P) so the mountpoint is always the *last* field.
+		# Then join fields 6..NF as the mountpoint to keep spaces intact.
 		sh = (
 			"bash -lc " +
-			_shq(
-				"df -B1 --output=target,size,used,avail,fstype | tail -n +2 | "
-				"awk '{printf(\"%s\\t%s\\t%s\\t%s\\t%s\\n\", $1,$2,$3,$4,$5)}'"
+			_shq(r"""
+			LC_ALL=C df -P -B1 | tail -n +2 | awk '
+			{
+			mp = $6;
+			if (NF > 6) { for (i = 7; i <= NF; i++) mp = mp " " $i; }
+			printf("%s\t%s\t%s\t%s\t%s\n", mp, $2, $3, $4, $1);
+			}'
+			"""
 			)
 		)
 		out = _run_remote(sid, sh, transport, log=log)
+
 		rows = []
 		for line in (out or "").splitlines():
-			mp, size, used, free, fstype = (line.split("\t") + ["","","","",""])[:5]
-			if not mp.startswith("/"):
+			mp, size, used, free, filesystem = (line.split("\t") + ["", "", "", "", ""])[:5]
+			if not (mp or "").startswith("/"):
 				continue
 			try:
-				size_i = int(size or 0); used_i = int(used or 0); free_i = int(free or 0)
+				size_i = int(size or 0)
+				used_i = int(used or 0)
+				free_i = int(free or 0)
 			except Exception:
-				size_i=used_i=free_i=0
-			rows.append({"letter": mp, "size": size_i, "used": used_i, "free": free_i, "label": fstype})
+				size_i = used_i = free_i = 0
+			rows.append({
+				"letter": mp,   # mountpoint shown in the UI
+				"size":   size_i,
+				"used":   used_i,
+				"free":   free_i,
+				"label":  filesystem  # shows device/fs name
+			})
+
 		log.info("fs.drives.ok", extra={"sid": sid, "count": len(rows)})
-		await _ws_send(ws, {"type":"fs.drives","drives":rows, "req_id":req_id}, log)
+		await _ws_send(ws, {"type": "fs.drives", "drives": rows, "req_id": req_id}, log)
 
 	async def _do_quickpaths(req: Dict[str, Any]):
 		sid = _resolve_sid(req.get("sid",""))

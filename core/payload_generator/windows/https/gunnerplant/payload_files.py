@@ -933,7 +933,6 @@ namespace RunOF.Internals
         						}
     						}
 						}
-						// --- END SAFE COPY GUARDING ---
 
 						Log($"Updating section ptrToRawData to {(addr.ToInt64() - this.base_addr.ToInt64()):X}");
 						var new_hdr = section_headers[i];
@@ -1167,7 +1166,6 @@ namespace RunOF.Internals
 
 				Log($"Zeroing and freeing loaded global buffer at 0x{this.global_buffer.ToInt64():X} with size 0x{this.global_buffer_size:X}");
 				
-				// the global_buffer can move around if the BOF reallocs to make it bigger so we need to read its final location from memory
 				var output_addr = Marshal.ReadIntPtr(this.global_buffer);
 				var output_size = Marshal.ReadInt32(this.global_buffer_size_ptr);
 
@@ -1290,8 +1288,6 @@ namespace RunOF.Internals
 						}
 						else if (symbol_name == this.ImportPrefix + this.EntrySymbol)
 						{
-							// this entry is found in out beacon_funcs object, and needs filling in with a ptr to the address of the go function in our actual BOF.
-							// We don't know this yet (until that is loaded), so we add an entry to the IAT we'll fill in later.
 
 							Log($"[Relocs][{i + 1}] Import type: EntrySymbol placeholder. Adding IAT entry for '{this.InternalDLLName}!{this.EntrySymbol}'");
 							func_addr = this.iat.Add(this.InternalDLLName, this.EntrySymbol, IntPtr.Zero);

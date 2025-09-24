@@ -33,3 +33,27 @@ GunnerC2 blends a beautiful GUI, a powerful shell, and a modular core to make da
 - **Collaboration:** **Teamserver**, **multi-operator**, **RBAC**
 
 ---
+
+## ⚙️ Install
+
+**Requirements**
+- Python **3.9–3.12** (3.11 recommended)
+- `pip` installed
+- (Linux GUI) system libs: `libxcb-xinerama0` and `libxkbcommon-x11-0`
+
+**Clone & install deps**
+```bash
+git clone https://github.com/<you>/GunnerC2.git
+cd GunnerC2
+python3 -m pip install -r requirements.txt
+
+sudo apt-get update
+sudo apt-get install -y libxcb-xinerama0 libxkbcommon-x11-0
+```
+
+**Using GunnerC2**
+```bash
+python3 main.py
+python3 gui/main.py
+```
+---

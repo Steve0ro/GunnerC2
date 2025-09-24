@@ -178,7 +178,7 @@ class SocksProxyCommand(Command):
 
 		def server(proxy_port, handler_port):
 			# generate TLS context using your existing function
-			context = tcp.generate_tls_context("0.0.0.0")
+			context = tcp._generate_tls_context("0.0.0.0")
 			q = queue.Queue()
 
 			# start reverse handler

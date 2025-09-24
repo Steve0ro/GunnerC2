@@ -54,4 +54,4 @@ app.include_router(gs_router, tags=["websocket"])
 app.include_router(ldap_ws_router, tags=["websocket"])
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("GUNNER_BACKEND_PORT", "8000")))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("GUNNER_BACKEND_PORT", "6060")))

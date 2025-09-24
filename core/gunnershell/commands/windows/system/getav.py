@@ -9,6 +9,7 @@ from core.command_execution import tcp_command_execution as tcp_exec
 from colorama import Style, Fore
 brightgreen = "\001" + Style.BRIGHT + Fore.GREEN + "\002"
 brightyellow = "\001" + Style.BRIGHT + Fore.YELLOW + "\002"
+brightred = "\001" + Style.BRIGHT + Fore.RED + "\002"
 
 @register("getav")
 class GetavCommand(Command):

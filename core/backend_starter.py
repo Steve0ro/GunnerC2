@@ -17,7 +17,7 @@ def ensure_backend_running(host: str | None = None, port: int | None = None) -> 
     Returns the base URL, e.g. "http://127.0.0.1:8000".
     """
     host = host or os.environ.get("GUNNER_BACKEND_HOST", "127.0.0.1")
-    port = int(port or os.environ.get("GUNNER_BACKEND_PORT", "8000"))
+    port = int(port or os.environ.get("GUNNER_BACKEND_PORT", "6060"))
     base_url = f"http://{host}:{port}"
 
     # If already up, don't start another.

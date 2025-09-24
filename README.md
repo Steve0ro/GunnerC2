@@ -51,6 +51,13 @@ sudo apt-get update
 sudo apt-get install -y libxcb-xinerama0 libxkbcommon-x11-0
 ```
 
+**Troubleshooting module not found**
+```bash
+touch core/__init__.py
+touch backend/__init__.py
+touch gui/__init__.py
+```
+
 **Using GunnerC2**
 ```bash
 python3 main.py

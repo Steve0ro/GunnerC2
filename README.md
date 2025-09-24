@@ -43,7 +43,7 @@ GunnerC2 blends a beautiful GUI, a powerful shell, and a modular core to make da
 
 **Clone & install deps**
 ```bash
-git clone https://github.com/<you>/GunnerC2.git
+https://github.com/LeighlinRamsay/GunnerC2.git
 cd GunnerC2
 python3 -m pip install -r requirements.txt
 

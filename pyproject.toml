@@ -1,0 +1,25 @@
+[project]
+name = "gunnerc2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "bcrypt>=4.3.0",
+    "colorama>=0.4.6",
+    "cryptography>=42.0",
+    "fastapi>=0.110",
+    "passlib[bcrypt]>=1.7",
+    "pydantic>=2.6",
+    "pyjwt>=2.8",
+    "pyperclip>=1.8.2",
+    "pyqt5>=5.15.9",
+    "python-multipart>=0.0.20",
+    "qtawesome>=1.3.0",
+    "requests>=2.31",
+    "sip>=6.7",
+    "tqdm>=4.67.1",
+    "uvicorn>=0.27",
+    "websockets>=15.0.1",
+    "wsproto>=1.2.0",
+]
